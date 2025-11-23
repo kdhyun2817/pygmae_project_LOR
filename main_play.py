@@ -32,6 +32,14 @@ class DamageType(Enum):
     BLUNT = auto()    # 타격
 
 
+# 화면에 표시용 한글 이름
+DAMAGE_NAME_KO = {
+    DamageType.SLASH: "참격",
+    DamageType.PIERCE: "관통",
+    DamageType.BLUNT: "타격",
+}
+
+
 # =========================
 #  색상
 # =========================
@@ -48,6 +56,7 @@ BAR_BG_COLOR = (60, 60, 60)
 
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
+PANEL_BG = (20, 20, 30)
 
 
 # =========================
@@ -263,7 +272,7 @@ def create_units():
     ally_group = pygame.sprite.Group()
     enemy_group = pygame.sprite.Group()
 
-    # 아군 3명
+    # 아군 3명 (그냥 그대로 둬도 됨)
     ally_positions = [(250, 450), (450, 450), (650, 450)]
     for x, y in ally_positions:
         hp_res = {
@@ -279,23 +288,134 @@ def create_units():
         u = Unit(x, y, 2, 5, True, None, 40, 20, hp_res, sp_res)
         ally_group.add(u)
 
-    # 적 3명 (슬래시 HP 취약, SP 견딤 예시)
-    enemy_positions = [(250, 200), (450, 200), (650, 200)]
-    for x, y in enemy_positions:
-        hp_res = {
-            DamageType.SLASH: ResistLevel.FATAL,   # HP 취약
-            DamageType.PIERCE: ResistLevel.NORMAL,
-            DamageType.BLUNT: ResistLevel.ENDURE,
-        }
-        sp_res = {
-            DamageType.SLASH: ResistLevel.ENDURE,  # SP 견딤
-            DamageType.PIERCE: ResistLevel.NORMAL,
-            DamageType.BLUNT: ResistLevel.NORMAL,
-        }
-        u = Unit(x, y, 2, 5, False, None, 40, 20, hp_res, sp_res)
+    # ===== 적 3명: 서로 다른 수치로 설정 =====
+    enemy_specs = [
+        # 1번 적: 참격 HP 취약 / SP 견딤, 체력 많고 속도 느림
+        {
+            "pos": (250, 200),
+            "max_hp": 50,
+            "max_sp": 20,
+            "speed_min": 1,
+            "speed_max": 3,
+            "hp_res": {
+                DamageType.SLASH: ResistLevel.FATAL,
+                DamageType.PIERCE: ResistLevel.NORMAL,
+                DamageType.BLUNT: ResistLevel.ENDURE,
+            },
+            "sp_res": {
+                DamageType.SLASH: ResistLevel.ENDURE,
+                DamageType.PIERCE: ResistLevel.NORMAL,
+                DamageType.BLUNT: ResistLevel.NORMAL,
+            },
+        },
+        # 2번 적: 관통에 약한 유리캐, 속도 빠름
+        {
+            "pos": (450, 200),
+            "max_hp": 35,
+            "max_sp": 25,
+            "speed_min": 3,
+            "speed_max": 6,
+            "hp_res": {
+                DamageType.SLASH: ResistLevel.NORMAL,
+                DamageType.PIERCE: ResistLevel.FATAL,
+                DamageType.BLUNT: ResistLevel.NORMAL,
+            },
+            "sp_res": {
+                DamageType.SLASH: ResistLevel.NORMAL,
+                DamageType.PIERCE: ResistLevel.WEAK,
+                DamageType.BLUNT: ResistLevel.ENDURE,
+            },
+        },
+        # 3번 적: 둔기에 강하고 SP가 튼튼한 탱커형
+        {
+            "pos": (650, 200),
+            "max_hp": 45,
+            "max_sp": 30,
+            "speed_min": 2,
+            "speed_max": 4,
+            "hp_res": {
+                DamageType.SLASH: ResistLevel.NORMAL,
+                DamageType.PIERCE: ResistLevel.ENDURE,
+                DamageType.BLUNT: ResistLevel.RESIST,
+            },
+            "sp_res": {
+                DamageType.SLASH: ResistLevel.ENDURE,
+                DamageType.PIERCE: ResistLevel.NORMAL,
+                DamageType.BLUNT: ResistLevel.RESIST,
+            },
+        },
+    ]
+
+    for spec in enemy_specs:
+        x, y = spec["pos"]
+        u = Unit(
+            x, y,
+            spec["speed_min"], spec["speed_max"],
+            False,              # is_ally=False (적)
+            None,               # image_path (나중에 교체 가능)
+            spec["max_hp"],
+            spec["max_sp"],
+            spec["hp_res"],
+            spec["sp_res"],
+        )
         enemy_group.add(u)
 
     return ally_group, enemy_group
+
+
+# =========================
+#  선택된 유닛 내성 표시 UI
+# =========================
+
+def draw_selected_unit_panel(surface, font, selected_unit):
+    """화면 오른쪽에 선택된 유닛의 내성 정보 패널 그리기"""
+    if selected_unit is None:
+        return
+
+    panel_x = 620
+    panel_y = 80
+    panel_w = 260
+    panel_h = 200
+
+    # 패널 배경
+    pygame.draw.rect(surface, PANEL_BG, (panel_x, panel_y, panel_w, panel_h))
+    pygame.draw.rect(surface, WHITE, (panel_x, panel_y, panel_w, panel_h), 2)
+
+    lines = []
+
+    # 제목
+    side = "아군" if selected_unit.is_ally else "적"
+    lines.append(f"[선택된 캐릭터] ({side})")
+
+    # HP / SP / 상태
+    lines.append(f"HP: {int(max(selected_unit.hp, 0))}/{int(selected_unit.max_hp)}")
+    lines.append(f"SP: {int(max(selected_unit.sp, 0))}/{int(selected_unit.max_sp)}")
+
+    if selected_unit.is_dead:
+        lines.append("상태: 사망")
+    elif selected_unit.is_escaped:
+        lines.append("상태: 도주")
+    elif selected_unit.is_staggered:
+        lines.append("상태: 흐트러짐")
+    else:
+        lines.append("상태: 정상")
+
+    lines.append("")  # 빈 줄
+    lines.append("[내성 정보] (HP / SP)")
+
+    # 각 속성별 내성
+    for dmg_type in DamageType:
+        name = DAMAGE_NAME_KO[dmg_type]
+        hp_lv = selected_unit.hp_resist_cur.get(dmg_type, ResistLevel.NORMAL).value
+        sp_lv = selected_unit.sp_resist_cur.get(dmg_type, ResistLevel.NORMAL).value
+        lines.append(f"{name}: HP {hp_lv} / SP {sp_lv}")
+
+    # 텍스트 출력
+    offset_y = 8
+    for text in lines:
+        surf = font.render(text, True, WHITE)
+        surface.blit(surf, (panel_x + 10, panel_y + offset_y))
+        offset_y += 22
 
 
 # =========================
@@ -314,6 +434,8 @@ def main():
     all_units.add(ally_group)
     all_units.add(enemy_group)
 
+    selected_unit = None  # 클릭해서 선택된 유닛
+
     running = True
     while running:
         dt = clock.tick(60)
@@ -322,6 +444,7 @@ def main():
             if event.type == pygame.QUIT:
                 running = False
 
+            # 키 입력
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
@@ -336,16 +459,29 @@ def main():
                     for e in enemy_group:
                         e.take_damage(10, DamageType.SLASH)
 
+            # 마우스 클릭으로 유닛 선택
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mouse_pos = event.pos
+                clicked = None
+                for u in all_units:
+                    if u.rect.collidepoint(mouse_pos):
+                        clicked = u
+                        break
+                selected_unit = clicked  # 아무 것도 안 눌렀으면 None으로 됨
+
         # 업데이트
         all_units.update()
 
         # 그리기
         screen.fill((30, 30, 40))
-        info1 = font.render("SPACE: 속도 굴리기 / A: 적에게 참격 10 / ESC: 종료", True, WHITE)
+        info1 = font.render("좌클릭: 캐릭터 선택 / SPACE: 속도 / A: 적 참격 10 / ESC: 종료", True, WHITE)
         screen.blit(info1, (20, 20))
 
         for u in all_units:
             u.draw(screen, font)
+
+        # 선택된 유닛 내성 패널
+        draw_selected_unit_panel(screen, font, selected_unit)
 
         pygame.display.flip()
 
