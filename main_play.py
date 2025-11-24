@@ -632,26 +632,19 @@ def create_units():
 # =========================
 
 def draw_selected_unit_panel(surface, font, selected_unit):
-    """화면 오른쪽에 선택된 유닛의 내성 정보 패널 그리기"""
     if selected_unit is None:
         return
 
+    # 기본 위치
     panel_x = 620
     panel_y = 80
     panel_w = 260
-    panel_h = 200
-
-    # 패널 배경
-    pygame.draw.rect(surface, PANEL_BG, (panel_x, panel_y, panel_w, panel_h))
-    pygame.draw.rect(surface, WHITE, (panel_x, panel_y, panel_w, panel_h), 2)
 
     lines = []
 
-    # 제목
     side = "아군" if selected_unit.is_ally else "적"
     lines.append(f"[선택된 캐릭터] ({side})")
 
-    # HP / SP / 상태
     lines.append(f"HP: {int(max(selected_unit.hp, 0))}/{int(selected_unit.max_hp)}")
     lines.append(f"SP: {int(max(selected_unit.sp, 0))}/{int(selected_unit.max_sp)}")
 
@@ -664,22 +657,33 @@ def draw_selected_unit_panel(surface, font, selected_unit):
     else:
         lines.append("상태: 정상")
 
-    lines.append("")  # 빈 줄
+    lines.append("")
     lines.append("[내성 정보] (HP / SP)")
 
-    # 각 속성별 내성
     for dmg_type in DamageType:
         name = DAMAGE_NAME_KO[dmg_type]
         hp_lv = selected_unit.hp_resist_cur.get(dmg_type, ResistLevel.NORMAL).value
         sp_lv = selected_unit.sp_resist_cur.get(dmg_type, ResistLevel.NORMAL).value
         lines.append(f"{name}: HP {hp_lv} / SP {sp_lv}")
 
+    # =============================
+    # ★ 패널 높이를 텍스트 줄 수 * 22px 로 자동 조정
+    # =============================
+    line_height = 22
+    padding = 16
+    panel_h = len(lines) * line_height + padding * 2
+
+    # 패널 배경
+    pygame.draw.rect(surface, PANEL_BG, (panel_x, panel_y, panel_w, panel_h))
+    pygame.draw.rect(surface, WHITE, (panel_x, panel_y, panel_w, panel_h), 2)
+
     # 텍스트 출력
-    offset_y = 8
+    offset_y = panel_y + padding
     for text in lines:
         surf = font.render(text, True, WHITE)
-        surface.blit(surf, (panel_x + 10, panel_y + offset_y))
-        offset_y += 22
+        surface.blit(surf, (panel_x + 10, offset_y))
+        offset_y += line_height
+
 
 
 # =========================
@@ -697,8 +701,6 @@ def main():
     all_units = pygame.sprite.Group()
     all_units.add(ally_group)
     all_units.add(enemy_group)
-
-    selected_unit = None  # 클릭해서 선택된 유닛
 
     running = True
     while running:
@@ -722,16 +724,16 @@ def main():
                 if event.key == pygame.K_a:
                     for e in enemy_group:
                         e.take_damage(10, DamageType.SLASH)
+        # 업데이트
+        all_units.update()
 
-            # 마우스 클릭으로 유닛 선택
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                mouse_pos = event.pos
-                clicked = None
-                for u in all_units:
-                    if u.rect.collidepoint(mouse_pos):
-                        clicked = u
-                        break
-                selected_unit = clicked  # 아무 것도 안 눌렀으면 None으로 됨
+        # === 마우스 오버한 유닛 찾기 ===
+        mouse_pos = pygame.mouse.get_pos()
+        hovered_unit = None
+        for u in all_units:
+            if u.rect.collidepoint(mouse_pos):
+                hovered_unit = u
+                break
 
         # 업데이트
         all_units.update()
@@ -744,8 +746,8 @@ def main():
         for u in all_units:
             u.draw(screen, font)
 
-        # 선택된 유닛 내성 패널
-        draw_selected_unit_panel(screen, font, selected_unit)
+        # 마우스 오버 중인 유닛 내성 패널
+        draw_selected_unit_panel(screen, font, hovered_unit)
 
         pygame.display.flip()
 
