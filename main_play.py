@@ -153,6 +153,15 @@ class Unit(pygame.sprite.Sprite):
             self.current_speed = random.randint(self.speed_min, self.speed_max)
 
     # =========================
+    #  턴 시작
+    # =========================
+    def reset_speed_for_new_turn(self):
+        """다음 턴 시작 시 속도 초기화"""
+        if not self.is_dead and not self.is_escaped:
+            self.current_speed = None
+
+
+    # =========================
     #  데미지 처리
     # =========================
     def take_damage(self, amount, damage_type):
