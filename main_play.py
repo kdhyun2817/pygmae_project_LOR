@@ -140,6 +140,13 @@ class Unit(pygame.sprite.Sprite):
     #  속도
     # =========================
     def roll_speed(self):
+        """한 턴에 한 번만 속도 굴리기"""
+
+        # 이미 속도가 정해져 있으면 다시 굴리지 않음
+        if self.current_speed is not None:
+            return
+
+        # 행동 불가 / 사망 / 도주면 속도 없음
         if not self.can_act or self.is_dead or self.is_escaped:
             self.current_speed = None
         else:
