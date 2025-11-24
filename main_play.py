@@ -711,7 +711,6 @@ def draw_selected_unit_panel(surface, font, selected_unit):
         offset_y += line_height
 
 
-
 # =========================
 #  메인 루프
 # =========================
