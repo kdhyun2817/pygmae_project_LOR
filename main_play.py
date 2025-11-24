@@ -552,8 +552,15 @@ def create_units():
     ally_group = pygame.sprite.Group()
     enemy_group = pygame.sprite.Group()
 
-    # 아군 3명 (그냥 그대로 둬도 됨)
-    ally_positions = [(250, 450), (450, 450), (650, 450)]
+    # =====================
+    # 아군: '<' 모양 —> 오른쪽으로 이동
+    # =====================
+    ally_positions = [
+        (700, 430),  # 가운데(전방)
+        (760, 380),  # 오른쪽 위 뒤
+        (760, 480),  # 오른쪽 아래 뒤
+    ]
+
     for x, y in ally_positions:
         hp_res = {
             DamageType.SLASH: ResistLevel.NORMAL,
@@ -568,11 +575,12 @@ def create_units():
         u = Unit(x, y, 2, 5, True, None, 40, 20, hp_res, sp_res)
         ally_group.add(u)
 
-    # ===== 적 3명: 서로 다른 수치로 설정 =====
+    # =====================
+    # 적: '>' 모양 —> 왼쪽으로 이동
+    # =====================
     enemy_specs = [
-        # 1번 적: 참격 HP 취약 / SP 견딤, 체력 많고 속도 느림
         {
-            "pos": (250, 200),
+            "pos": (200, 430),   # 가운데(전방)
             "max_hp": 50,
             "max_sp": 20,
             "speed_min": 1,
@@ -588,9 +596,8 @@ def create_units():
                 DamageType.BLUNT: ResistLevel.NORMAL,
             },
         },
-        # 2번 적: 관통에 약한 유리캐, 속도 빠름
         {
-            "pos": (450, 200),
+            "pos": (140, 380),   # 왼쪽 위 뒤
             "max_hp": 35,
             "max_sp": 25,
             "speed_min": 3,
@@ -606,9 +613,8 @@ def create_units():
                 DamageType.BLUNT: ResistLevel.ENDURE,
             },
         },
-        # 3번 적: 둔기에 강하고 SP가 튼튼한 탱커형
         {
-            "pos": (650, 200),
+            "pos": (140, 480),   # 왼쪽 아래 뒤
             "max_hp": 45,
             "max_sp": 30,
             "speed_min": 2,
@@ -631,8 +637,8 @@ def create_units():
         u = Unit(
             x, y,
             spec["speed_min"], spec["speed_max"],
-            False,              # is_ally=False (적)
-            None,               # image_path (나중에 교체 가능)
+            False,              # 적
+            None,               # 이미지
             spec["max_hp"],
             spec["max_sp"],
             spec["hp_res"],
@@ -641,6 +647,10 @@ def create_units():
         enemy_group.add(u)
 
     return ally_group, enemy_group
+
+
+
+
 
 
 # =========================
