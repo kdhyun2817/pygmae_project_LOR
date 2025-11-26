@@ -6,6 +6,40 @@ from unit import (
     WHITE, PANEL_BG
 )
 from stages import STAGES
+
+# ---- 막(턴) 시스템 헬퍼 ----
+
+def start_scene(scene_index, all_units):
+    """
+    새 막 시작 시 호출.
+    - 각 유닛 빛 +1
+    - 흐트러짐 회복
+    - 속도 주사위 리셋
+    """
+    for u in all_units:
+        # 빛 1개 획득
+        if hasattr(u, "gain_light"):
+            u.gain_light(1)
+
+        # 이전 막에서 흐트러졌던 유닛 복구
+        if hasattr(u, "recover_stagger_next_scene"):
+            u.recover_stagger_next_scene()
+
+        # 속도 주사위 리셋 (다음에 SPACE로 다시 굴릴 수 있게)
+        if hasattr(u, "reset_speed_for_new_turn"):
+            u.reset_speed_for_new_turn()
+
+
+def end_scene(all_units):
+    """
+    막 종료 시 호출.
+    - 화상/출혈 등 상태이상 처리 및 지속시간 감소
+    """
+    for u in all_units:
+        if hasattr(u, "on_scene_end"):
+            u.on_scene_end()
+
+
 # ----------------------------
 # 감정고조
 # ----------------------------
@@ -174,6 +208,9 @@ def run_battle(screen, stage_code):
     all_units.add(ally_group)
     all_units.add(enemy_group)
 
+    scene_index = 1          # 현재 막 번호
+    scene_started = False    # 막이 시작됐는지 여부
+
     player_emotion = BattleEmotionSystem(is_player_side=True)
     enemy_emotion = BattleEmotionSystem(is_player_side=False)
 
@@ -182,6 +219,12 @@ def run_battle(screen, stage_code):
 
     while running:
         dt = clock.tick(60)
+
+        # --- 막이 아직 시작되지 않았으면 여기서 시작 처리 ---
+        if not scene_started:
+            start_scene(scene_index, all_units)
+            scene_started = True
+
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -204,6 +247,16 @@ def run_battle(screen, stage_code):
                     for e in enemy_group:
                         e.take_damage(10, DamageType.SLASH)
 
+                # N 키: 테스트용으로 '막 종료 후 다음 막 시작'
+                if event.key == pygame.K_n:
+                    # 이번 막 종료 처리
+                    end_scene(all_units)
+
+                    # 다음 막 번호로
+                    scene_index += 1
+                    scene_started = False   # 다음 루프에서 start_scene()이 다시 호출됨
+
+
         # 승리/패배 조건 체크 (예: 적 전멸 → win, 아군 전멸 → lose)
         if all(e.is_dead or e.is_escaped for e in enemy_group):
             result = "win"
@@ -224,7 +277,7 @@ def run_battle(screen, stage_code):
         # 그리기
         screen.fill((30, 30, 40))
         info = font.render(
-            f"스테이지: {stage_code} / SPACE: 속도 / A: 적 참격 / ESC: 전투 종료",
+            f"스테이지: {stage_code} / 막: {scene_index} / SPACE: 속도 / A: 적 참격 / N: 다음 막 / ESC: 전투 종료",
             True, WHITE
         )
         screen.blit(info, (20, 20))
