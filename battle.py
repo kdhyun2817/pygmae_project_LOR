@@ -1,9 +1,10 @@
 # battle.py
 import pygame
+import random
 
 from unit import (
     Unit, DamageType, ResistLevel, DAMAGE_NAME_KO,
-    WHITE, PANEL_BG
+    WHITE, PANEL_BG, DiceKind, DamageType, StatusType
 )
 from stages import STAGES
 
@@ -38,6 +39,49 @@ def end_scene(all_units):
     for u in all_units:
         if hasattr(u, "on_scene_end"):
             u.on_scene_end()
+
+# ----------------------------
+# Dice 클래스
+# ----------------------------
+class Dice:
+    def __init__(self, owner, kind, min_value, max_value, damage_type=None):
+        self.owner = owner
+        self.kind = kind
+        self.min_value = min_value
+        self.max_value = max_value
+        self.damage_type = damage_type
+        self.value = None
+
+    def roll(self):
+        self.apply_status_modifiers()
+        self.value = random.randint(self.min_value, self.max_value)
+        return self.value
+
+    def apply_status_modifiers(self):
+        for st in self.owner.status_effects:
+
+            # 공격 강화/약화
+            if st.type == StatusType.STRENGTH and self.kind == DiceKind.ATTACK:
+                self.max_value += st.stacks
+
+            if st.type == StatusType.WEAK and self.kind == DiceKind.ATTACK:
+                self.max_value -= st.stacks
+
+            # 수비 강화/약화
+            if st.type == StatusType.ENDURANCE and self.kind != DiceKind.ATTACK:
+                self.max_value += st.stacks
+
+            if st.type == StatusType.DISARM and self.kind != DiceKind.ATTACK:
+                self.max_value -= st.stacks
+
+            # 마비 (현재 간단 구현: max - 3)
+            if st.type == StatusType.PARALYSIS:
+                self.max_value -= 3
+
+        # max < min 방지
+        if self.max_value < self.min_value:
+            self.min_value = self.max_value
+
 
 
 # ----------------------------
@@ -191,6 +235,146 @@ def draw_unit_info_panel(surface, font, hovered_unit):
         surface.blit(surf, (panel_x + 10, offset_y))
         offset_y += line_height
 
+# ----------------------------
+# 합 시스템
+# ----------------------------
+def resolve_clash(dice_a: Dice, dice_b: Dice):
+    """
+    라오루식 합 시스템.
+    dice_a, dice_b는 각각 owner(Unit), kind(DiceKind), damage_type 등을 가지고 있어야 한다.
+    이 함수는:
+      - 두 주사위를 굴리고
+      - 주사위 종류(공격/방어/회피) 조합에 따라
+      - 적절한 데미지/흐트러짐/회복을 적용한다.
+    """
+
+    # --- 주사위 굴리기 ---
+    va = dice_a.roll()
+    vb = dice_b.roll()
+
+    ka = dice_a.kind
+    kb = dice_b.kind
+
+    ua = dice_a.owner  # Unit
+    ub = dice_b.owner  # Unit
+
+    # 편의를 위해 값 차이
+    diff_ab = va - vb
+    diff_ba = vb - va
+
+    # ========= 1) 공격 vs 공격 =========
+    if ka == DiceKind.ATTACK and kb == DiceKind.ATTACK:
+        if va > vb:
+            # A 승 → B가 A값만큼 피해
+            ub.take_damage(va, dice_a.damage_type)
+            winner = "a"
+        elif vb > va:
+            ua.take_damage(vb, dice_b.damage_type)
+            winner = "b"
+        else:
+            # 무승부: 둘 다 피해 없음 (감정코인 등은 나중에 이 분기에서 처리)
+            winner = "tie"
+
+    # ========= 2) 공격 vs 방어 / 방어 vs 공격 =========
+    elif ka == DiceKind.ATTACK and kb == DiceKind.DEFENSE:
+        # A: 공격 / B: 방어
+        if va > vb:
+            # 방어 패배 → 방어측 HP,SP에 (공-방)만큼 직접 피해
+            ub.take_hp_sp_direct(diff_ab)
+            winner = "a"
+        elif vb > va:
+            # 방어 승리 → 공격측 SP에 (방-공)만큼 흐트러짐 피해
+            ua.take_sp_direct(diff_ba)
+            winner = "b"
+        else:
+            winner = "tie"
+
+    elif ka == DiceKind.DEFENSE and kb == DiceKind.ATTACK:
+        # A: 방어 / B: 공격 (위 로직과 대칭)
+        if va > vb:
+            # 방어 승리 → 공격측 SP에 (방-공)만큼 흐트러짐 피해
+            ub.take_sp_direct(diff_ab)
+            winner = "a"
+        elif vb > va:
+            # 방어 패배 → 방어측 HP,SP에 (공-방)만큼 직접 피해
+            ua.take_hp_sp_direct(diff_ba)
+            winner = "b"
+        else:
+            winner = "tie"
+
+    # ========= 3) 방어 vs 방어 =========
+    elif ka == DiceKind.DEFENSE and kb == DiceKind.DEFENSE:
+        if va > vb:
+            # 승리한 방어 주사위 값만큼 상대 SP에 흐트러짐 피해
+            ub.take_sp_direct(va)
+            winner = "a"
+        elif vb > va:
+            ua.take_sp_direct(vb)
+            winner = "b"
+        else:
+            winner = "tie"
+
+    # ========= 4) 방어 vs 회피 / 회피 vs 방어 =========
+    elif ka == DiceKind.DEFENSE and kb == DiceKind.EVADE:
+        if va > vb:
+            # 방어 승리 → 방어값만큼 상대 SP 흐트러짐 피해
+            ub.take_sp_direct(va)
+            winner = "a"
+        elif vb > va:
+            # 회피 승리 → 회피값만큼 회피측 SP 회복
+            ub.recover_sp(vb)
+            winner = "b"
+        else:
+            winner = "tie"
+
+    elif ka == DiceKind.EVADE and kb == DiceKind.DEFENSE:
+        if va > vb:
+            # 회피 승리 → 회피값만큼 회피측 SP 회복
+            ua.recover_sp(va)
+            winner = "a"
+        elif vb > va:
+            # 방어 승리 → 방어값만큼 상대 SP 흐트러짐 피해
+            ua.take_sp_direct(vb)
+            winner = "b"
+        else:
+            winner = "tie"
+
+    # ========= 5) 회피 vs 공격 / 공격 vs 회피 =========
+    elif ka == DiceKind.EVADE and kb == DiceKind.ATTACK:
+        if va > vb:
+            # 회피 승리 → 회피값만큼 SP 회복 (재사용 효과는 나중에 구현 가능)
+            ua.recover_sp(va)
+            winner = "a"
+        elif vb > va:
+            # 공격 승리 → 체력 + 흐트러짐 피해 (공격 주사위 값만큼)
+            ua.take_hp_sp_direct(vb)
+            winner = "b"
+        else:
+            winner = "tie"
+
+    elif ka == DiceKind.ATTACK and kb == DiceKind.EVADE:
+        if va > vb:
+            # 공격 승리
+            ub.take_hp_sp_direct(va)
+            winner = "a"
+        elif vb > va:
+            # 회피 승리 → SP 회복
+            ub.recover_sp(vb)
+            winner = "b"
+        else:
+            winner = "tie"
+
+    # ========= 6) 회피 vs 회피 =========
+    elif ka == DiceKind.EVADE and kb == DiceKind.EVADE:
+        # 둘 다 소멸, 효과 없음 (감정코인/부가효과는 나중에 추가 가능)
+        winner = "tie"
+
+    else:
+        # 정의되지 않은 조합 (혹시 모를 예외용)
+        winner = "unknown"
+
+    return winner, va, vb
+
 
 def run_battle(screen, stage_code):
     """
@@ -255,6 +439,29 @@ def run_battle(screen, stage_code):
                     # 다음 막 번호로
                     scene_index += 1
                     scene_started = False   # 다음 루프에서 start_scene()이 다시 호출됨
+
+                # C 키: 테스트용 합 시뮬레이션
+                if event.key == pygame.K_c:
+                    # 아군 중 살아있는 첫 유닛, 적군 중 살아있는 첫 유닛 찾기
+                    attacker = None
+                    defender = None
+                    for u in ally_group:
+                        if not u.is_dead and not u.is_escaped:
+                            attacker = u
+                            break
+                    for e in enemy_group:
+                        if not e.is_dead and not e.is_escaped:
+                            defender = e
+                            break
+
+                    if attacker is not None and defender is not None:
+                        # 예시: 아군 공격 주사위 (3~7 참격), 적 방어 주사위 (2~5)
+                        atk_dice = Dice(attacker, DiceKind.ATTACK, 3, 7, DamageType.SLASH)
+                        def_dice = Dice(defender, DiceKind.DEFENSE, 2, 5, None)
+
+                        winner, va, vb = resolve_clash(atk_dice, def_dice)
+                        print(f"합 결과: A({atk_dice.kind.name})={va}, B({def_dice.kind.name})={vb}, winner={winner}")
+
 
 
         # 승리/패배 조건 체크 (예: 적 전멸 → win, 아군 전멸 → lose)
