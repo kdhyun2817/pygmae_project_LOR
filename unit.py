@@ -83,6 +83,18 @@ class StatusType(Enum):
     WEAK = auto()          # 허약
     DISARM = auto()        # 무장 해제
     BIND = auto()          # 속박
+    LAST_STAND = auto()        # 끈질김
+    SMOKE = auto()             # 연기
+    CHARGE = auto()            # 충전
+    UNLOCK = auto()            # 해금
+    CORROSION = auto()         # 부식
+    FAIRY = auto()             # 요정
+    FLARE = auto()             # 요원지화
+    TARGET = auto()            # 표적
+    RESONANCE = auto()         # 진동
+    NAIL = auto()              # 못
+    RESIST = auto()            # 저항 (기존 ResistLevel과 다름, 상태이상)
+
 
 # ----------------------------
 # 상태이상 클래스
@@ -247,27 +259,45 @@ class Unit(pygame.sprite.Sprite):
         if self.is_dead or self.is_escaped:
             return
 
-        # 1) 내성에 따른 기본 피해 계산
         hp_resist_level = self.hp_resist_cur.get(damage_type, ResistLevel.NORMAL)
         sp_resist_level = self.sp_resist_cur.get(damage_type, ResistLevel.NORMAL)
 
         hp_mult = RESIST_MULTIPLIER[hp_resist_level]
         sp_mult = RESIST_MULTIPLIER[sp_resist_level]
 
+        # 1. 내성 기반 기본 피해
         hp_damage = amount * hp_mult
         sp_damage = amount * sp_mult
 
-        # 2) 취약(FRAGILE) → 피해량 증가
+        # 2. 취약(FRAGILE)
         fragile_bonus = 0
         for st in self.status_effects:
             if st.type == StatusType.FRAGILE:
                 fragile_bonus += st.stacks
-
         if fragile_bonus > 0:
             hp_damage *= (1 + fragile_bonus)
             sp_damage *= (1 + fragile_bonus)
 
-        # 3) 보호(PROTECT) / 흐트러짐 보호(STAGGER_PROTECT) → 피해량 감소
+        # 3. 표적 / 연기 / 부식 같은 "피해 증폭" 상태이상들
+        # --- 표적(Target): +50%
+        for st in self.status_effects:
+            if st.type == StatusType.TARGET:
+                hp_damage *= 1.5
+                sp_damage *= 1.5
+
+        # --- 연기(Smoke): 1스택당 +5%
+        for st in self.status_effects:
+            if st.type == StatusType.SMOKE:
+                hp_damage *= (1 + 0.05 * st.stacks)
+                sp_damage *= (1 + 0.05 * st.stacks)
+
+        # --- 부식(Corrosion): 스택만큼 고정 추가
+        for st in self.status_effects:
+            if st.type == StatusType.CORROSION:
+                hp_damage += st.stacks
+                sp_damage += st.stacks
+
+        # 4. 보호 / 흐트러짐 보호 (최종값에서 깎기)
         protect = 0
         stagger_protect = 0
         for st in self.status_effects:
@@ -279,11 +309,25 @@ class Unit(pygame.sprite.Sprite):
         hp_damage = max(0, hp_damage - protect)
         sp_damage = max(0, sp_damage - stagger_protect)
 
-        # 4) 실제 HP/SP 적용
+        # 5. 최종 피해 적용
         self.hp -= hp_damage
         self.sp -= sp_damage
 
-        # 5) 사망 / 흐트러짐 판정
+        # 6. 못 / 요정 같은 "추가 직격 피해" (보호 무시)
+        if damage_type == DamageType.BLUNT:
+            for st in self.status_effects:
+                if st.type == StatusType.NAIL:
+                    extra = st.stacks * 5
+                    self.hp -= extra
+                    self.sp -= extra
+                    st.stacks = 0
+
+        for st in self.status_effects:
+            if st.type == StatusType.FAIRY:
+                self.hp -= st.stacks
+                self.sp -= st.stacks
+
+        # 7. 사망 / 흐트러짐 판정
         if self.hp <= 0 and not (self.is_dead or self.is_escaped):
             self.on_death(escaped=False)
 
@@ -320,25 +364,50 @@ class Unit(pygame.sprite.Sprite):
     # =============================
     def on_scene_end(self):
         to_remove = []
+
         for st in self.status_effects:
 
-            # --- 화상 ---
-            if st.type == StatusType.BURN:
-                dmg = st.stacks
-                self.take_hp_sp_direct(dmg)
-                st.stacks = st.stacks * 2 // 3  # 2/3 소수점 버림
+            # ----- 연기(Smoke) : 막 종료 시 1 감소 -----
+            if st.type == StatusType.SMOKE:
+                st.stacks -= 1
+                if st.stacks <= 0:
+                    to_remove.append(st)
 
-            # --- 출혈 (막 종료 시 감소) ---
-            if st.type == StatusType.BLEED:
-                st.stacks = (st.stacks * 2 + 2) // 3  # 2/3 소수점 올림
+            # ----- 부식(Corrosion) : 막 종료 시 부식스택만큼 피해 + 스택 1 감소 -----
+            if st.type == StatusType.CORROSION:
+                self.take_hp_sp_direct(st.stacks)
+                st.stacks -= 1
+                if st.stacks <= 0:
+                    to_remove.append(st)
 
-            # 턴 지속 시간 감소
-            st.duration -= 1
-            if st.duration <= 0 or st.stacks <= 0:
-                to_remove.append(st)
+            # ----- 요정(Fairy) : 막 종료 시 요정스택만큼 피해 + 스택 절반 감소 -----
+            if st.type == StatusType.FAIRY:
+                self.take_hp_sp_direct(st.stacks)
+                st.stacks //= 2
+                if st.stacks <= 0:
+                    to_remove.append(st)
 
-        for st in to_remove:
-            self.status_effects.remove(st)
+            # ----- 표적(Target) 지속은 1막만 -----
+            if st.type == StatusType.TARGET:
+                st.duration -= 1
+                if st.duration <= 0:
+                    to_remove.append(st)
+
+            # ----- 요원지화(Flare) : 흐트러짐 상태일 때 트리거됨 (나중에 expand) -----
+            if st.type == StatusType.FLARE:
+                st.duration -= 1
+                if st.duration <= 0:
+                    to_remove.append(st)
+
+            # 기본 지속 시간 감소
+            if hasattr(st, "duration"):
+                st.duration -= 1
+                if st.duration <= 0:
+                    to_remove.append(st)
+
+        for r in to_remove:
+            if r in self.status_effects:
+                self.status_effects.remove(r)
 
     # =============================
     # 사망 및 흐트러짐 판정
@@ -349,6 +418,24 @@ class Unit(pygame.sprite.Sprite):
         self.can_act = False
         self.current_speed = None
 
+        # 끈질김(Last Stand)
+        last_stand = None
+        for st in self.status_effects:
+            if st.type == StatusType.LAST_STAND:
+                last_stand = st
+                break
+
+        if last_stand and not escaped:
+            import random
+            chance = 0.8 * (0.5 ** (last_stand.stacks - 1))  # 80%, 이후 절반씩 감소
+            if random.random() < chance:
+                self.hp = 30  # 부활
+                last_stand.stacks += 1  # 부활 성공 → 스택 1 증가
+                self.is_dead = False
+                self.can_act = True
+                self.is_staggered = False
+                return
+
     def on_staggered(self):
         self.is_staggered = True
         self.can_act = False
@@ -358,6 +445,20 @@ class Unit(pygame.sprite.Sprite):
             self.hp_resist_cur[k] = ResistLevel.FATAL
         for k in self.sp_resist_cur:
             self.sp_resist_cur[k] = ResistLevel.FATAL
+
+        # 요원지화 : 흐트러짐 시 화상 절반을 아군 전체에게 전달
+        for st in self.status_effects:
+            if st.type == StatusType.FLARE:
+                burn_amount = 0
+                for fx in self.status_effects:
+                    if fx.type == StatusType.BURN:
+                        burn_amount = fx.stacks // 2
+
+                # 같은 편에게 화상 부여 (자기 제외)
+                group = self.ally_group if self.is_ally else self.enemy_group
+                for ally in group:
+                    if ally is not self:
+                        ally.add_status(StatusType.BURN, burn_amount)
 
     def recover_stagger_next_scene(self):
         if self.is_dead or self.is_escaped:
