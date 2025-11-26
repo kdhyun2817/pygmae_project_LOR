@@ -473,6 +473,14 @@ def run_battle(screen, stage_code):
     all_units.add(ally_group)
     all_units.add(enemy_group)
 
+    # 각 유닛에 아군/적군 그룹 참조를 연결하여 on_staggered 등에서 안전하게 활용할 수 있게 한다.
+    for u in ally_group:
+        u.ally_group = ally_group
+        u.enemy_group = enemy_group
+    for e in enemy_group:
+        e.ally_group = enemy_group
+        e.enemy_group = ally_group
+
     scene_index = 1          # 현재 막 번호
     scene_started = False    # 막이 시작됐는지 여부
 

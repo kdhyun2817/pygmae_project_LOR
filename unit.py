@@ -76,6 +76,7 @@ class StatusType(Enum):
     ENDURANCE = auto()
     PROTECT = auto()
     VULNERABLE = auto()
+    FRAGILE = auto()
     PARALYSIS = auto()
     BLEED = auto()
     BURN = auto()
@@ -83,6 +84,13 @@ class StatusType(Enum):
     WEAK = auto()
     SMOKE = auto()
     CHARGE = auto()
+    TARGET = auto()
+    CORROSION = auto()
+    STAGGER_PROTECT = auto()
+    NAIL = auto()
+    FAIRY = auto()
+    FLARE = auto()
+    LAST_STAND = auto()
     HP_HEAL = auto()   # 자원 계열
     LIGHT = auto()     # 자원 계열
 
@@ -128,6 +136,10 @@ class Unit(pygame.sprite.Sprite):
         self.is_escaped = False
         self.is_staggered = False
         self.can_act = True
+
+        # 전투 그룹 참조 (흐트러짐 시 동료에게 효과를 전달하는 기능 등에서 사용)
+        self.ally_group = None
+        self.enemy_group = None
 
         self.status_effects = []
 

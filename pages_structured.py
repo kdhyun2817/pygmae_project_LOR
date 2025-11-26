@@ -64,6 +64,8 @@ def _parse_status(s: str) -> Optional[StatusType]:
         return StatusType.STRENGTH
     if s == "ENDURANCE":
         return StatusType.ENDURANCE
+    if s == "FRAGILE":
+        return StatusType.FRAGILE
     if s == "BLEED":
         return StatusType.BLEED
     if s == "PARALYSIS":
@@ -77,6 +79,13 @@ def _parse_status(s: str) -> Optional[StatusType]:
     if s == "WEAK": return StatusType.WEAK
     if s == "SMOKE": return StatusType.SMOKE
     if s == "CHARGE": return StatusType.CHARGE
+    if s == "TARGET": return StatusType.TARGET
+    if s == "CORROSION": return StatusType.CORROSION
+    if s == "STAGGER_PROTECT": return StatusType.STAGGER_PROTECT
+    if s == "NAIL": return StatusType.NAIL
+    if s == "FAIRY": return StatusType.FAIRY
+    if s == "FLARE": return StatusType.FLARE
+    if s == "LAST_STAND": return StatusType.LAST_STAND
     if s == "HP_HEAL": return StatusType.HP_HEAL
     if s == "LIGHT": return StatusType.LIGHT
 
