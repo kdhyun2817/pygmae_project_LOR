@@ -401,6 +401,51 @@ def run_battle(screen, stage_code):
     running = True
     result = None  # 전투 결과
 
+    # 감정 UI 색상
+    EMOTION_BG = (30, 30, 50)
+    EMOTION_BORDER = (200, 200, 220)
+    EMOTION_TEXT = (240, 240, 255)
+    EMOTION_POS_COLOR = (120, 200, 255)  # 긍정 코인 색
+    EMOTION_NEG_COLOR = (255, 120, 140)  # 부정 코인 색
+
+    def draw_emotion_ui(surface, font, player_emotion: BattleEmotionSystem, enemy_emotion: BattleEmotionSystem):
+        """화면 양쪽 위에 감정단계를 표시"""
+
+        width, height = surface.get_size()
+
+        box_w = 140
+        box_h = 60
+        margin = 10
+
+        # ----- 왼쪽 위: 적 감정 -----
+        ex = margin
+        ey = margin
+
+        pygame.draw.rect(surface, EMOTION_BG, (ex, ey, box_w, box_h), border_radius=8)
+        pygame.draw.rect(surface, EMOTION_BORDER, (ex, ey, box_w, box_h), 2, border_radius=8)
+
+        enemy_title = font.render("적 감정", True, EMOTION_TEXT)
+        surface.blit(enemy_title, (ex + 10, ey + 6))
+
+        enemy_lv = font.render(f"Lv. {enemy_emotion.level}", True, EMOTION_TEXT)
+        surface.blit(enemy_lv, (ex + 10, ey + 28))
+
+        # ----- 오른쪽 위: 아군 감정 -----
+        px = width - box_w - margin
+        py = margin
+
+        pygame.draw.rect(surface, EMOTION_BG, (px, py, box_w, box_h), border_radius=8)
+        pygame.draw.rect(surface, EMOTION_BORDER, (px, py, box_w, box_h), 2, border_radius=8)
+
+        player_title = font.render("아군 감정", True, EMOTION_TEXT)
+        surface.blit(player_title, (px + 10, py + 6))
+
+        player_lv = font.render(f"Lv. {player_emotion.level}", True, EMOTION_TEXT)
+        surface.blit(player_lv, (px + 10, py + 28))
+
+        # (선택) 코인 표시도 넣고 싶으면 아래처럼 간단하게 점 두 줄 정도로 표현할 수 있음.
+        # 지금은 감정단계만 필요한 것 같으니 생략해도 됨.
+
     while running:
         dt = clock.tick(60)
 
@@ -483,15 +528,22 @@ def run_battle(screen, stage_code):
 
         # 그리기
         screen.fill((30, 30, 40))
+
+        # 상단 정보 텍스트
         info = font.render(
-            f"스테이지: {stage_code} / 막: {scene_index} / SPACE: 속도 / A: 적 참격 / N: 다음 막 / ESC: 전투 종료",
+            f"스테이지: {stage_code} / 막: {scene_index} / SPACE: 속도 / A: 적 참격 / C: 합 테스트 / N: 다음 막 / ESC: 전투 종료",
             True, WHITE
         )
         screen.blit(info, (20, 20))
 
+        # ✅ 감정 UI 그리기
+        draw_emotion_ui(screen, font, player_emotion, enemy_emotion)
+
+        # 유닛들 그리기
         for u in all_units:
             u.draw(screen, font)
 
+        # 마우스 올린 유닛 정보 패널
         draw_unit_info_panel(screen, font, hovered_unit)
 
         pygame.display.flip()
