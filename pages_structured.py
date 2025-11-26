@@ -15,6 +15,9 @@ class EffectTrigger(Enum):
     NONE = "NONE"
     ON_HIT = "ON_HIT"
     ON_CLASH_WIN = "ON_CLASH_WIN"
+    ON_CLASH_LOSS = "ON_CLASH_LOSS"
+    ON_BE_HIT = "ON_BE_HIT"
+    ON_DEFEND = "ON_DEFEND"
 
 
 class EffectTarget(Enum):
@@ -104,7 +107,11 @@ def _parse_trigger(s: str) -> EffectTrigger:
     s = (s or "").strip().upper()
     if not s:
         return EffectTrigger.NONE
-    return EffectTrigger[s]
+    try:
+        return EffectTrigger[s]
+    except KeyError:
+        # 알 수 없는 트리거는 기본값으로 처리
+        return EffectTrigger.NONE
 
 
 def _parse_target(s: str) -> Optional[EffectTarget]:
