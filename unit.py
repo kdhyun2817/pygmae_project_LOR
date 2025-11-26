@@ -22,6 +22,11 @@ BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 PANEL_BG = (20, 20, 30)
 
+LIGHT_FULL_COLOR = (250, 230, 120)   # 빛이 있는 마름모 색
+LIGHT_EMPTY_COLOR = (80, 80, 80)     # 빈 마름모 색
+LIGHT_BORDER_COLOR = (20, 20, 20)    # 테두리
+
+
 # ----------------------------
 # 내성 / 데미지 타입
 # ----------------------------
@@ -120,8 +125,12 @@ class Unit(pygame.sprite.Sprite):
         self.is_staggered = False
         self.can_act = True
 
-        self.status_effects=[]
+        self.status_effects = []
 
+        # --- 빛 시스템 ---
+        # 라오루 기준 기본은 3빛, 감정 1단계에서 +1 → 4빛 되는 구조
+        self.max_light = 3
+        self.light = 3
 
         # --- 내성 (HP/SP 분리) ---
         default_resist = {
@@ -178,7 +187,7 @@ class Unit(pygame.sprite.Sprite):
         self.current_speed = max(1, self.current_speed + speed_bonus)
 
 
-# =============================
+    # =============================
     # 상태이상 리스트
     # =============================
     def add_status(self, status_type: StatusType, stacks: int, duration: int = 1):
@@ -188,6 +197,46 @@ class Unit(pygame.sprite.Sprite):
                 st.duration = max(st.duration, duration)
                 return
         self.status_effects.append(StatusEffect(status_type, stacks, duration))
+
+    # =============================
+    # 빛 시스템: 획득 / 소모 / 회복
+    # =============================
+    def gain_light(self, amount: int):
+        """빛을 얻는다. 최대 빛을 넘지 않도록 클램프."""
+        if amount <= 0:
+            return
+        if self.max_light <= 0:
+            return
+
+        self.light += amount
+        if self.light > self.max_light:
+            self.light = self.max_light
+
+    def spend_light(self, cost: int) -> bool:
+        """빛을 소비. 충분하면 True, 부족하면 False."""
+        if cost <= 0:
+            return True
+        if self.light >= cost:
+            self.light -= cost
+            return True
+        return False
+
+    def set_light_to_max(self):
+        """현재 빛을 최대치로 맞춘다 (감정등급 상승 시 등에서 사용)."""
+        if self.max_light > 0:
+            self.light = self.max_light
+
+    def increase_max_light(self, amount: int = 1, fill: bool = True):
+        """
+        최대 빛을 증가시킨다. 감정등급 상승 시 사용 예정.
+        fill=True이면 현재 빛도 새 최대치로 채운다.
+        """
+        if amount <= 0:
+            return
+        self.max_light += amount
+        if fill:
+            self.light = self.max_light
+
 
     # =============================
     # 데미지 처리
@@ -266,9 +315,9 @@ class Unit(pygame.sprite.Sprite):
         self.sp = min(self.sp + amount, self.max_sp)
 
 
-# =============================
-# 막 종료 판정
-# =============================
+    # =============================
+    # 막 종료 판정
+    # =============================
     def on_scene_end(self):
         to_remove = []
         for st in self.status_effects:
@@ -370,10 +419,47 @@ class Unit(pygame.sprite.Sprite):
         pygame.draw.rect(surface, BAR_BG_COLOR, (x, y_sp, bar_width, bar_height))
         pygame.draw.rect(surface, SP_BAR_COLOR, (x, y_sp, int(bar_width * ratio_sp), bar_height))
 
+    def draw_light(self, surface):
+        """머리 위에 빛(마름모)를 그린다."""
+        if self.max_light <= 0:
+            return
+
+        # 마름모들 간 간격과 크기
+        spacing = 16   # 마름모 사이 간격
+        size = 4       # 마름모 한 변의 '반' 길이
+
+        # 전체 너비 계산해 가운데 정렬
+        total_width = (self.max_light - 1) * spacing
+        start_x = self.rect.centerx - total_width / 2
+
+        # 위치: 캐릭터 머리 조금 위 (속도 토큰보다 약간 아래/위는 취향대로)
+        y = self.rect.top - 12
+
+        for i in range(self.max_light):
+            cx = start_x + i * spacing
+            points = [
+                (cx, y - size),       # 위
+                (cx + size, y),       # 오른쪽
+                (cx, y + size),       # 아래
+                (cx - size, y),       # 왼쪽
+            ]
+
+            # 현재 빛 개수만큼은 채운 색, 나머지는 빈 색
+            if i < int(self.light):
+                fill_color = LIGHT_FULL_COLOR
+            else:
+                fill_color = LIGHT_EMPTY_COLOR
+
+            pygame.draw.polygon(surface, fill_color, points)
+            pygame.draw.polygon(surface, LIGHT_BORDER_COLOR, points, 1)
+
+
     def draw(self, surface, font):
         surface.blit(self.image, self.rect)
         self.draw_speed_token(surface, font)
         self.draw_hp_sp_bar(surface)
+        self.draw_light(surface)
+
 
 
 
