@@ -104,7 +104,7 @@ def apply_effect(effect, user, target):
         StatusType.STRENGTH,
         StatusType.ENDURANCE,
         StatusType.PROTECT,
-        StatusType.FRAGILE,   # 취약
+        StatusType.VULNERABLE,   # 취약
         StatusType.WEAK,      # 허약
         StatusType.BIND,      # 속박
         StatusType.PARALYSIS, # 마비
@@ -142,7 +142,6 @@ def use_page(page: CombatPage, user, allies, enemies):
         # 필요하면 ENEMY_ALL 등 추가
 
     # 주사위 생성해서 실제 공격 (간단 버전)
-    from battle import Dice  # 이미 있는 Dice 클래스 재사용
     dice_objs = []
     for spec in page.dice_list:
         d = Dice(
