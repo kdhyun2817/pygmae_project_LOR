@@ -6,6 +6,60 @@ from unit import (
     WHITE, PANEL_BG
 )
 from stages import STAGES
+# ----------------------------
+# 감정고조
+# ----------------------------
+class BattleEmotionSystem:
+    def __init__(self, is_player_side=True):
+        self.is_player_side = is_player_side   # True = 아군, False = 적군
+        self.level = 1
+        self.positive = 0
+        self.negative = 0
+
+        self.emotion_requirements = [3, 3, 5, 9, 15]
+
+        # 아군만 받는 보너스
+        self.max_light_bonus = 0
+        self.speed_dice_bonus = 0
+        self.next_scene_draw_bonus = 0
+
+        # 환상체(EGO) 획득 횟수
+        self.ego_count = 0
+
+    def gain_coin(self, pos=0, neg=0):
+        self.positive += pos
+        self.negative += neg
+        self.check_level_up()
+
+    def total_coins(self):
+        return self.positive + self.negative
+
+    def check_level_up(self):
+        while (
+            self.level < 5
+            and self.total_coins() >= self.emotion_requirements[self.level - 1]
+        ):
+            self.level += 1
+            self.positive = 0
+            self.negative = 0
+            self.on_level_up()
+
+    def on_level_up(self):
+        """감정 레벨이 증가했을 때 처리"""
+        # 공통(아군/적 동일)
+        self.ego_count += 1
+
+        if not self.is_player_side:
+            return  # 적은 여기서 끝 (추가 효과 없음)
+
+        # 아군만 추가 효과
+        self.max_light_bonus += 1
+
+        if self.level == 4:
+            self.speed_dice_bonus += 1
+
+        if self.level == 5:
+            self.next_scene_draw_bonus += 1
 
 
 def create_ally_units():
@@ -119,6 +173,9 @@ def run_battle(screen, stage_code):
     all_units = pygame.sprite.Group()
     all_units.add(ally_group)
     all_units.add(enemy_group)
+
+    player_emotion = BattleEmotionSystem(is_player_side=True)
+    enemy_emotion = BattleEmotionSystem(is_player_side=False)
 
     running = True
     result = None  # 전투 결과
