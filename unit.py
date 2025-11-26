@@ -53,11 +53,40 @@ DAMAGE_NAME_KO = {
     DamageType.BLUNT: "타격",
 }
 
+
+# ----------------------------
+# 주사위 종류
+# ----------------------------
 class DiceKind(Enum):
     ATTACK = auto()
     DEFENSE = auto()
     EVADE = auto()
 
+# ----------------------------
+# 상태이상
+# ----------------------------
+class StatusType(Enum):
+    BURN = auto()          # 화상
+    PARALYSIS = auto()     # 마비
+    BLEED = auto()         # 출혈
+    PROTECT = auto()       # 보호
+    STAGGER_PROTECT = auto() # 흐트러짐 보호
+    STRENGTH = auto()      # 힘
+    ENDURANCE = auto()     # 인내
+    HASTE = auto()         # 신속
+    FRAGILE = auto()       # 취약
+    WEAK = auto()          # 허약
+    DISARM = auto()        # 무장 해제
+    BIND = auto()          # 속박
+
+# ----------------------------
+# 상태이상 클래스
+# ----------------------------
+class StatusEffect:
+    def __init__(self, status_type: StatusType, stacks: int, duration: int = 1):
+        self.type = status_type
+        self.stacks = stacks
+        self.duration = duration
 
 # ----------------------------
 # Unit 클래스
@@ -73,6 +102,8 @@ class Unit(pygame.sprite.Sprite):
         max_sp=20.0,
         hp_resist=None,
         sp_resist=None,
+
+
     ):
         super().__init__()
 
@@ -88,6 +119,9 @@ class Unit(pygame.sprite.Sprite):
         self.is_escaped = False
         self.is_staggered = False
         self.can_act = True
+
+        self.status_effects=[]
+
 
         # --- 내성 (HP/SP 분리) ---
         default_resist = {
@@ -126,6 +160,14 @@ class Unit(pygame.sprite.Sprite):
     # 속도 굴리기
     # =============================
     def roll_speed(self):
+        # --- 신속 / 속박 상태이상 적용 ---
+        speed_bonus = 0
+        for st in self.status_effects:
+            if st.type == StatusType.HASTE:
+                speed_bonus += st.stacks
+            if st.type == StatusType.BIND:
+                speed_bonus -= st.stacks
+
         if self.current_speed is not None:
             return
         if not self.can_act or self.is_dead or self.is_escaped:
@@ -133,28 +175,70 @@ class Unit(pygame.sprite.Sprite):
         else:
             self.current_speed = random.randint(self.speed_min, self.speed_max)
 
+        self.current_speed = max(1, self.current_speed + speed_bonus)
+
+
+# =============================
+    # 상태이상 리스트
+    # =============================
+    def add_status(self, status_type: StatusType, stacks: int, duration: int = 1):
+        for st in self.status_effects:
+            if st.type == status_type:
+                st.stacks += stacks
+                st.duration = max(st.duration, duration)
+                return
+        self.status_effects.append(StatusEffect(status_type, stacks, duration))
+
     # =============================
     # 데미지 처리
     # =============================
     def take_damage(self, amount, damage_type):
-        """공격 주사위용 – 내성 적용 HP/SP 동시 데미지"""
+        """공격 주사위로 들어오는 피해 처리 (내성 + 상태이상 포함)"""
+
         if self.is_dead or self.is_escaped:
             return
 
-        # HP
-        hp_lv = self.hp_resist_cur.get(damage_type, ResistLevel.NORMAL)
-        hp_mult = RESIST_MULTIPLIER[hp_lv]
-        self.hp -= amount * hp_mult
+        # 1) 내성에 따른 기본 피해 계산
+        hp_resist_level = self.hp_resist_cur.get(damage_type, ResistLevel.NORMAL)
+        sp_resist_level = self.sp_resist_cur.get(damage_type, ResistLevel.NORMAL)
 
-        # SP
-        sp_lv = self.sp_resist_cur.get(damage_type, ResistLevel.NORMAL)
-        sp_mult = RESIST_MULTIPLIER[sp_lv]
-        self.sp -= amount * sp_mult
+        hp_mult = RESIST_MULTIPLIER[hp_resist_level]
+        sp_mult = RESIST_MULTIPLIER[sp_resist_level]
 
-        # 사망/흐트러짐 판정
+        hp_damage = amount * hp_mult
+        sp_damage = amount * sp_mult
+
+        # 2) 취약(FRAGILE) → 피해량 증가
+        fragile_bonus = 0
+        for st in self.status_effects:
+            if st.type == StatusType.FRAGILE:
+                fragile_bonus += st.stacks
+
+        if fragile_bonus > 0:
+            hp_damage *= (1 + fragile_bonus)
+            sp_damage *= (1 + fragile_bonus)
+
+        # 3) 보호(PROTECT) / 흐트러짐 보호(STAGGER_PROTECT) → 피해량 감소
+        protect = 0
+        stagger_protect = 0
+        for st in self.status_effects:
+            if st.type == StatusType.PROTECT:
+                protect += st.stacks
+            elif st.type == StatusType.STAGGER_PROTECT:
+                stagger_protect += st.stacks
+
+        hp_damage = max(0, hp_damage - protect)
+        sp_damage = max(0, sp_damage - stagger_protect)
+
+        # 4) 실제 HP/SP 적용
+        self.hp -= hp_damage
+        self.sp -= sp_damage
+
+        # 5) 사망 / 흐트러짐 판정
         if self.hp <= 0 and not (self.is_dead or self.is_escaped):
-            self.on_death(False)
-        if self.sp <= 0 and not self.is_staggered:
+            self.on_death(escaped=False)
+
+        if self.sp <= 0 and (not self.is_staggered) and (not self.is_dead) and (not self.is_escaped):
             self.on_staggered()
 
     def take_hp_sp_direct(self, amount):
@@ -181,8 +265,34 @@ class Unit(pygame.sprite.Sprite):
     def recover_sp(self, amount):
         self.sp = min(self.sp + amount, self.max_sp)
 
+
+# =============================
+# 막 종료 판정
+# =============================
+    def on_scene_end(self):
+        to_remove = []
+        for st in self.status_effects:
+
+            # --- 화상 ---
+            if st.type == StatusType.BURN:
+                dmg = st.stacks
+                self.take_hp_sp_direct(dmg)
+                st.stacks = st.stacks * 2 // 3  # 2/3 소수점 버림
+
+            # --- 출혈 (막 종료 시 감소) ---
+            if st.type == StatusType.BLEED:
+                st.stacks = (st.stacks * 2 + 2) // 3  # 2/3 소수점 올림
+
+            # 턴 지속 시간 감소
+            st.duration -= 1
+            if st.duration <= 0 or st.stacks <= 0:
+                to_remove.append(st)
+
+        for st in to_remove:
+            self.status_effects.remove(st)
+
     # =============================
-    # 상태 변화
+    # 사망 및 흐트러짐 판정
     # =============================
     def on_death(self, escaped=False):
         self.is_dead = (not escaped)
@@ -280,5 +390,32 @@ class Dice:
         self.value = None
 
     def roll(self):
+        self.apply_status_modifiers()
         self.value = random.randint(self.min_value, self.max_value)
         return self.value
+
+    def apply_status_modifiers(self):
+        for st in self.owner.status_effects:
+
+            # 공격 강화/약화
+            if st.type == StatusType.STRENGTH and self.kind == DiceKind.ATTACK:
+                self.max_value += st.stacks
+
+            if st.type == StatusType.WEAK and self.kind == DiceKind.ATTACK:
+                self.max_value -= st.stacks
+
+            # 수비 강화/약화
+            if st.type == StatusType.ENDURANCE and self.kind != DiceKind.ATTACK:
+                self.max_value += st.stacks
+
+            if st.type == StatusType.DISARM and self.kind != DiceKind.ATTACK:
+                self.max_value -= st.stacks
+
+            # 마비 (현재 간단 구현: max - 3)
+            if st.type == StatusType.PARALYSIS:
+                self.max_value -= 3
+
+        # max < min 방지
+        if self.max_value < self.min_value:
+            self.min_value = self.max_value
+
