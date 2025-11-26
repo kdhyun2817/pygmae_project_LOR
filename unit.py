@@ -71,29 +71,21 @@ class DiceKind(Enum):
 # 상태이상
 # ----------------------------
 class StatusType(Enum):
-    BURN = auto()          # 화상
-    PARALYSIS = auto()     # 마비
-    BLEED = auto()         # 출혈
-    PROTECT = auto()       # 보호
-    STAGGER_PROTECT = auto() # 흐트러짐 보호
-    STRENGTH = auto()      # 힘
-    ENDURANCE = auto()     # 인내
-    HASTE = auto()         # 신속
-    FRAGILE = auto()       # 취약
-    WEAK = auto()          # 허약
-    DISARM = auto()        # 무장 해제
-    BIND = auto()          # 속박
-    LAST_STAND = auto()        # 끈질김
-    SMOKE = auto()             # 연기
-    CHARGE = auto()            # 충전
-    UNLOCK = auto()            # 해금
-    CORROSION = auto()         # 부식
-    FAIRY = auto()             # 요정
-    FLARE = auto()             # 요원지화
-    TARGET = auto()            # 표적
-    RESONANCE = auto()         # 진동
-    NAIL = auto()              # 못
-    RESIST = auto()            # 저항 (기존 ResistLevel과 다름, 상태이상)
+    HASTE = auto()
+    STRENGTH = auto()
+    ENDURANCE = auto()
+    PROTECT = auto()
+    VULNERABLE = auto()
+    PARALYSIS = auto()
+    BLEED = auto()
+    BURN = auto()
+    BIND = auto()
+    WEAK = auto()
+    SMOKE = auto()
+    CHARGE = auto()
+    HP_HEAL = auto()   # 자원 계열
+    LIGHT = auto()     # 자원 계열
+
 
 
 # ----------------------------

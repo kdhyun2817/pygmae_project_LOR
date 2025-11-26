@@ -8,6 +8,11 @@ from unit import (
 )
 from stages import STAGES
 
+from pages_structured import load_combat_pages, CombatPage, EffectTarget, EffectTrigger
+
+COMBAT_PAGES = load_combat_pages("combat_pages_structured.csv")
+
+
 # ---- 막(턴) 시스템 헬퍼 ----
 
 def start_scene(scene_index, all_units):
@@ -82,6 +87,83 @@ class Dice:
         if self.max_value < self.min_value:
             self.min_value = self.max_value
 
+def apply_effect(effect, user, target):
+    """
+    pages_structured.EffectSpec 을 실제 유닛(target)에 적용하는 함수.
+    - user: 효과를 발생시킨 유닛(버프/디버프 소유자)
+    - target: 효과를 받는 유닛
+    """
+    if effect is None:
+        return
+
+    st = effect.status
+
+    # ---- 일반 상태이상 / 버프 ----
+    if st in (
+        StatusType.HASTE,
+        StatusType.STRENGTH,
+        StatusType.ENDURANCE,
+        StatusType.PROTECT,
+        StatusType.FRAGILE,   # 취약
+        StatusType.WEAK,      # 허약
+        StatusType.BIND,      # 속박
+        StatusType.PARALYSIS, # 마비
+        StatusType.BLEED,     # 출혈
+        StatusType.BURN,      # 화상
+        StatusType.SMOKE,     # 연기
+        StatusType.CHARGE,    # 충전
+    ):
+        target.add_status(st, effect.amount, effect.duration)
+
+    # ---- 자원 계열 ----
+    elif st == StatusType.HP_HEAL:
+        target.hp = min(target.max_hp, target.hp + effect.amount)
+
+    elif st == StatusType.LIGHT:
+        target.gain_light(effect.amount)
+
+    # 필요하면 여기서 더 특수처리 추가 가능
+
+
+def use_page(page: CombatPage, user, allies, enemies):
+    # 코스트 체크
+    if not user.spend_light(page.cost):
+        print("빛 부족:", page.name)
+        return
+
+    # 사용 효과
+    if page.use_effect:
+        t = page.use_effect.target
+        if t == EffectTarget.SELF:
+            apply_effect(page.use_effect, user, user)
+        elif t == EffectTarget.ALLY_ALL:
+            for a in allies:
+                apply_effect(page.use_effect, user, a)
+        # 필요하면 ENEMY_ALL 등 추가
+
+    # 주사위 생성해서 실제 공격 (간단 버전)
+    from battle import Dice  # 이미 있는 Dice 클래스 재사용
+    dice_objs = []
+    for spec in page.dice_list:
+        d = Dice(
+            owner=user,
+            kind=spec.kind,
+            min_value=spec.min_value,
+            max_value=spec.max_value,
+            damage_type=spec.damage_type,
+        )
+        # spec.effect는 나중에 on_hit / on_clash_win에서 쓰면 됨
+        dice_objs.append((d, spec.effect))
+
+    # 일단 테스트용으로 첫 적에게 그냥 공격
+    target = next(e for e in enemies if not e.is_dead and not e.is_escaped)
+    for d, eff in dice_objs:
+        val = d.roll()
+        if d.kind == DiceKind.ATTACK:
+            dmg_type = d.damage_type or DamageType.SLASH
+            target.take_damage(val, dmg_type)
+            print(f"{page.name} 공격 주사위 {val} → 적 HP {target.hp:.1f}")
+            # 추후: ON_HIT 효과 여기서 eff.trigger == EffectTrigger.ON_HIT이면 적용
 
 
 # ----------------------------
