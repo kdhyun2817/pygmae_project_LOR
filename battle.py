@@ -549,3 +549,4 @@ def run_battle(screen, stage_code):
         pygame.display.flip()
 
     return result
+
