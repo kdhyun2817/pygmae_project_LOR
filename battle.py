@@ -404,8 +404,9 @@ def draw_speed_hover_info(surface, font, hovered_speed_unit):
 
 def draw_enemy_target_arrows(surface, enemy_group):
     """
-    적 유닛이 계획한 공격 방향을 빨간색 화살표로 그린다.
-    - planned_page, planned_target 이 설정된 적만 표시
+    적 유닛이 계획한 공격 방향을 빨간색 포물선 화살표로 그린다.
+    - 시작점: 적 유닛의 속도 코인 중심
+    - 끝점: 공격 대상 아군 유닛의 속도 코인 중심
     """
     ARROW_COLOR = (255, 80, 80)
 
@@ -418,28 +419,55 @@ def draw_enemy_target_arrows(surface, enemy_group):
         if target.is_dead or target.is_escaped:
             continue
 
-        start = e.rect.center
-        end = target.rect.center
+        # 1) 시작/끝점: 각 유닛의 "속도 코인" 중심
+        start = (e.rect.centerx, e.rect.top - 40)
+        end = (target.rect.centerx, target.rect.top - 40)
 
-        # 기본 선
-        pygame.draw.line(surface, ARROW_COLOR, start, end, 3)
+        sx, sy = start
+        ex, ey = end
 
-        # 간단한 화살촉 (끝점 근처에 작은 삼각형)
-        dx = end[0] - start[0]
-        dy = end[1] - start[1]
-        length = max((dx * dx + dy * dy) ** 0.5, 1)
-        ux, uy = dx / length, dy / length
+        # 2) 포물선(Bezier 곡선) 제어점 설정
+        #    중간 지점을 기준으로 살짝 위로 들어올려서 '∩' 모양으로 보이게 함
+        mx = (sx + ex) / 2
+        my = (sy + ey) / 2
 
-        # 화살촉 기준점
-        base_x = end[0] - ux * 12
-        base_y = end[1] - uy * 12
+        # 위로 80픽셀 정도 들어올리기 (필요하면 숫자 조정)
+        control = (mx, my - 80)
 
-        # 좌우로 벌어진 두 점
-        perp_x, perp_y = -uy, ux
-        left = (base_x + perp_x * 6, base_y + perp_y * 6)
-        right = (base_x - perp_x * 6, base_y - perp_y * 6)
+        # 3) 베지어 곡선 점들 계산
+        points = []
+        steps = 20  # 선분 개수 (값 늘리면 더 부드러워짐)
+        for i in range(steps + 1):
+            t = i / steps
+            # 2차 Bezier: B(t) = (1-t)^2 * P0 + 2(1-t)t * P1 + t^2 * P2
+            x = (1 - t) ** 2 * sx + 2 * (1 - t) * t * control[0] + t ** 2 * ex
+            y = (1 - t) ** 2 * sy + 2 * (1 - t) * t * control[1] + t ** 2 * ey
+            points.append((x, y))
 
-        pygame.draw.polygon(surface, ARROW_COLOR, [end, left, right])
+        # 4) 포인트들을 선분으로 이어서 곡선 그리기
+        for i in range(len(points) - 1):
+            pygame.draw.line(surface, ARROW_COLOR, points[i], points[i + 1], 3)
+
+        # 5) 화살촉: 곡선 마지막 두 점의 방향을 이용해서 삼각형 그리기
+        if len(points) >= 2:
+            x1, y1 = points[-2]
+            x2, y2 = points[-1]
+            dx = x2 - x1
+            dy = y2 - y1
+            length = max((dx * dx + dy * dy) ** 0.5, 1)
+            ux, uy = dx / length, dy / length  # 단위 방향 벡터
+
+            # 화살촉 기준점 (끝점에서 약간 뒤쪽)
+            base_x = x2 - ux * 12
+            base_y = y2 - uy * 12
+
+            # 좌우로 벌어진 두 점 (수직 벡터 사용)
+            perp_x, perp_y = -uy, ux
+            left = (base_x + perp_x * 6, base_y + perp_y * 6)
+            right = (base_x - perp_x * 6, base_y - perp_y * 6)
+
+            pygame.draw.polygon(surface, ARROW_COLOR, [(x2, y2), left, right])
+
 
 
 
@@ -743,10 +771,6 @@ def run_battle(screen, stage_code):
                             defender = e
                             break
 
-                    # 1번 키: 적이 누구를 노리고 있는지 화살표 표시 토글
-                    if event.key == pygame.K_1:
-                        show_enemy_arrows = not show_enemy_arrows
-
                     if attacker is not None and defender is not None:
                         # 예시: 아군 공격 주사위 (3~7 참격), 적 방어 주사위 (2~5)
                         atk_dice = Dice(attacker, DiceKind.ATTACK, 3, 7, DamageType.SLASH)
@@ -754,8 +778,9 @@ def run_battle(screen, stage_code):
 
                         winner, va, vb = resolve_clash(atk_dice, def_dice)
                         print(f"합 결과: A({atk_dice.kind.name})={va}, B({def_dice.kind.name})={vb}, winner={winner}")
-
-
+                # 1번 키: 적이 누구를 노리고 있는지 화살표 표시 토글
+                if event.key == pygame.K_1:
+                    show_enemy_arrows = not show_enemy_arrows
 
         # 승리/패배 조건 체크 (예: 적 전멸 → win, 아군 전멸 → lose)
         if all(e.is_dead or e.is_escaped for e in enemy_group):
