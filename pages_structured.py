@@ -9,6 +9,7 @@ from unit import DamageType, DiceKind, StatusType
 
 class EffectTiming(Enum):
     ON_USE = "ON_USE"
+    ON_BATTLE_START = "ON_BATTLE_START"
 
 
 class EffectTrigger(Enum):

@@ -82,6 +82,7 @@ class StatusType(Enum):
     BURN = auto()
     BIND = auto()
     WEAK = auto()
+    DISARM = auto()
     SMOKE = auto()
     CHARGE = auto()
     TARGET = auto()
@@ -137,6 +138,8 @@ class Unit(pygame.sprite.Sprite):
         self.is_staggered = False
         self.can_act = True
 
+        self.current_speed = None
+
         # 전투 그룹 참조 (흐트러짐 시 동료에게 효과를 전달하는 기능 등에서 사용)
         self.ally_group = None
         self.enemy_group = None
@@ -147,6 +150,10 @@ class Unit(pygame.sprite.Sprite):
         # 라오루 기준 기본은 3빛, 감정 1단계에서 +1 → 4빛 되는 구조
         self.max_light = 3
         self.light = 3
+
+        def reset_speed_for_new_turn(self):
+            """새 막 시작 시 속도 주사위를 다시 굴릴 수 있도록 초기화."""
+            self.current_speed = None
 
         # --- 내성 (HP/SP 분리) ---
         default_resist = {
@@ -185,7 +192,6 @@ class Unit(pygame.sprite.Sprite):
     # 속도 굴리기
     # =============================
     def roll_speed(self):
-        # --- 신속 / 속박 상태이상 적용 ---
         speed_bonus = 0
         for st in self.status_effects:
             if st.type == StatusType.HASTE:
@@ -193,15 +199,17 @@ class Unit(pygame.sprite.Sprite):
             if st.type == StatusType.BIND:
                 speed_bonus -= st.stacks
 
+        # 이미 굴려진 상태면 다시 굴리지 않음
         if self.current_speed is not None:
             return
+
+        # 행동 불가 / 사망 / 도주면 속도 없음
         if not self.can_act or self.is_dead or self.is_escaped:
             self.current_speed = None
-        else:
-            self.current_speed = random.randint(self.speed_min, self.speed_max)
+            return
 
-        self.current_speed = max(1, self.current_speed + speed_bonus)
-
+        base = random.randint(self.speed_min, self.speed_max)
+        self.current_speed = max(1, base + speed_bonus)
 
     # =============================
     # 상태이상 리스트
@@ -273,14 +281,15 @@ class Unit(pygame.sprite.Sprite):
         hp_damage = amount * hp_mult
         sp_damage = amount * sp_mult
 
-        # 2. 취약(FRAGILE)
-        fragile_bonus = 0
+        # 2. 취약/FRAGILE/VULNERABLE
+        vuln_bonus = 0
         for st in self.status_effects:
-            if st.type == StatusType.FRAGILE:
-                fragile_bonus += st.stacks
-        if fragile_bonus > 0:
-            hp_damage *= (1 + fragile_bonus)
-            sp_damage *= (1 + fragile_bonus)
+            if st.type in (StatusType.FRAGILE, StatusType.VULNERABLE):
+                vuln_bonus += st.stacks
+
+        if vuln_bonus > 0:
+            hp_damage *= (1 + vuln_bonus)
+            sp_damage *= (1 + vuln_bonus)
 
         # 3. 표적 / 연기 / 부식 같은 "피해 증폭" 상태이상들
         # --- 표적(Target): +50%
