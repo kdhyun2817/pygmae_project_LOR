@@ -97,6 +97,7 @@ class StatusType(Enum):
 
 
 
+
 # ----------------------------
 # 상태이상 클래스
 # ----------------------------
@@ -120,6 +121,8 @@ class Unit(pygame.sprite.Sprite):
         max_sp=20.0,
         hp_resist=None,
         sp_resist=None,
+
+
 
 
     ):
@@ -158,6 +161,15 @@ class Unit(pygame.sprite.Sprite):
         self.planned_page = None
         self.planned_target = None
 
+        # --- 속도 주사위 개수 ---
+        # 기본은 1개, 감정 4단계 이상에서 증가할 수 있다.
+        self.speed_dice_count = 1
+
+        # --- 빛 시스템 ---
+        # 라오루 기준 기본은 3빛, 감정 1단계에서 +1 → 4빛 되는 구조
+        self.max_light = 3
+        self.light = 3
+
         # --- 빛 시스템 ---
         # 라오루 기준 기본은 3빛, 감정 1단계에서 +1 → 4빛 되는 구조
         self.max_light = 3
@@ -188,6 +200,9 @@ class Unit(pygame.sprite.Sprite):
         self.speed_max = speed_max
         self.current_speed = None
 
+
+
+
         # --- 이미지 ---
         if image_path:
             self.image = pygame.image.load(image_path).convert_alpha()
@@ -209,11 +224,10 @@ class Unit(pygame.sprite.Sprite):
             if st.type == StatusType.BIND:
                 speed_bonus -= st.stacks
 
-        # 이미 굴려진 상태면 다시 굴리지 않음
+
         if self.current_speed is not None:
             return
 
-        # 행동 불가 / 사망 / 도주면 속도 없음
         if not self.can_act or self.is_dead or self.is_escaped:
             self.current_speed = None
             return

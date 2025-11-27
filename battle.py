@@ -21,8 +21,30 @@ def start_scene(scene_index, all_units):
     - 각 유닛 빛 +1
     - 흐트러짐 회복
     - 속도 주사위 리셋
+    - 감정 단계 보너스(최대 빛 / 속도 주사위 개수) 적용
     """
     for u in all_units:
+        # 감정 단계 보너스 적용
+        emo = None
+        try:
+            emo = get_emotion_system_for(u)
+        except NameError:
+            emo = None
+
+        # 기본 속도 주사위 개수는 1, 감정 4단계 이상이면 +speed_dice_bonus
+        base_speed_dice = 1
+        if emo is not None:
+            u.speed_dice_count = base_speed_dice + emo.speed_dice_bonus
+        else:
+            u.speed_dice_count = base_speed_dice
+
+        # 최대 빛 보너스는 플레이어 측에만 적용
+        if emo is not None and emo.is_player_side:
+            base_max_light = 3
+            u.max_light = base_max_light + emo.max_light_bonus
+            if u.light > u.max_light:
+                u.light = u.max_light
+
         # 빛 1개 획득
         if hasattr(u, "gain_light"):
             u.gain_light(1)
@@ -36,19 +58,33 @@ def start_scene(scene_index, all_units):
             u.reset_speed_for_new_turn()
 
 
+
+
 def end_scene(all_units):
     """
     막 종료 시 호출.
     - 화상/출혈 등 상태이상 처리 및 지속시간 감소
-    - 각 유닛이 책장 1장씩 추가로 뽑음
+    - 각 유닛이 책장 1장씩 추가로 뽑음 (+ 감정 단계 보너스)
     """
     for u in all_units:
         if hasattr(u, "on_scene_end"):
             u.on_scene_end()
 
-        # ✅ 덱이 있는 유닛이라면 막 종료 시 카드 1장 뽑기
+        # ✅ 덱이 있는 유닛이라면 막 종료 시 카드 1장 + 감정 보너스만큼 추가 드로우
         if hasattr(u, "draw_cards"):
-            u.draw_cards(1)
+            extra_draw = 0
+            emo = None
+            try:
+                emo = get_emotion_system_for(u)
+            except NameError:
+                emo = None
+
+            if emo is not None and emo.is_player_side:
+                extra_draw = emo.next_scene_draw_bonus
+
+            u.draw_cards(1 + extra_draw)
+
+
 
 def reset_plans(all_units):
     """새 막 시작 시 모든 유닛의 planned_page / planned_target / initial_target 리셋"""
@@ -67,13 +103,14 @@ def reset_plans(all_units):
 # Dice 클래스
 # ----------------------------
 class Dice:
-    def __init__(self, owner, kind, min_value, max_value, damage_type=None):
+    def __init__(self, owner, kind, min_value, max_value, damage_type=None, effect=None):
         self.owner = owner
         self.kind = kind
         self.min_value = min_value
         self.max_value = max_value
         self.damage_type = damage_type
         self.value = None
+        self.effect = effect  # ← 추가: 이 주사위의 EffectSpec (없으면 None)
 
     def roll(self):
         self.apply_status_modifiers()
@@ -141,6 +178,39 @@ def apply_effect(effect, user, target):
         target.gain_light(effect.amount)
 
     # 필요하면 여기서 더 특수처리 추가 가능
+
+def apply_dice_trigger(dice: Dice, user, target, trigger_type):
+    """
+    Dice가 가진 effect 중, 주어진 trigger_type에 해당하면 발동시킨다.
+    - user: 효과를 거는 쪽 (주사위 주인)
+    - target: 기본 적 대상
+    """
+    effect = getattr(dice, "effect", None)
+    if effect is None:
+        return
+    if effect.trigger != trigger_type:
+        return
+
+    # EffectTarget에 따라 실제 타겟 결정
+    if effect.target == EffectTarget.SELF:
+        apply_effect(effect, user, user)
+    elif effect.target == EffectTarget.ENEMY:
+        apply_effect(effect, user, target)
+    elif effect.target == EffectTarget.ALLY_ALL:
+        group = user.ally_group
+        if group is not None:
+            for ally in group:
+                apply_effect(effect, user, ally)
+    elif effect.target == EffectTarget.ENEMY_ALL:
+        group = user.enemy_group
+        if group is not None:
+            for enemy in group:
+                apply_effect(effect, user, enemy)
+    else:
+        # 안전하게 기본은 target에 적용
+        apply_effect(effect, user, target)
+
+
 
 
 def use_page(page: CombatPage, user, allies, enemies):
@@ -222,11 +292,10 @@ class BattleEmotionSystem:
         self.emotion_requirements = [3, 3, 5, 9, 15]
 
         # 아군만 받는 보너스
-        self.max_light_bonus = 0
-        self.speed_dice_bonus = 0
-        self.next_scene_draw_bonus = 0
+        self.max_light_bonus = 0            # 최대 빛 +1, +2 ...
+        self.speed_dice_bonus = 0           # ✅ "추가 속도 코인 개수" (행동 슬롯 수 - 1)
+        self.next_scene_draw_bonus = 0      # 다음 막 카드 추가 드로우 개수
 
-        # 환상체(EGO) 획득 횟수
         self.ego_count = 0
 
     def gain_coin(self, pos=0, neg=0):
@@ -249,20 +318,68 @@ class BattleEmotionSystem:
 
     def on_level_up(self):
         """감정 레벨이 증가했을 때 처리"""
-        # 공통(아군/적 동일)
-        self.ego_count += 1
+        self.ego_count += 1  # 공통 (아군/적 둘 다)
 
         if not self.is_player_side:
-            return  # 적은 여기서 끝 (추가 효과 없음)
+            return  # 적은 여기서 끝 (추가 보너스 없음)
 
         # 아군만 추가 효과
         self.max_light_bonus += 1
 
         if self.level == 4:
+            # ✅ 속도 굴리기 보너스 X, "속도 코인 1개 추가" 로만 취급
             self.speed_dice_bonus += 1
 
         if self.level == 5:
             self.next_scene_draw_bonus += 1
+
+
+def get_emotion_system_for(unit):
+    """
+    Unit이 아군이면 PLAYER_EMOTION, 적이면 ENEMY_EMOTION을 반환.
+    """
+    global PLAYER_EMOTION, ENEMY_EMOTION
+    if unit.is_ally:
+        return PLAYER_EMOTION
+    else:
+        return ENEMY_EMOTION
+
+def award_emotion_for_hit(attacker, defender, damage_amount, is_kill=False):
+    """
+    공격자가 피해를 줄 때 감정 코인을 지급하는 함수.
+    - 기본 규칙:
+      (라오루 기준 간단화 버전)
+
+      • 피해를 준 공격자 → 긍정 코인 +1
+      • 피해를 받은 대상 → 부정 코인 +1
+
+    - 추격치/감정 단계 시스템은 EmotionSystem.gain_coin()에서 자동 처리됨.
+
+    - is_kill=True 이면:
+      • 공격자 → 추가 긍정 코인 +2
+      • 피격자 → 추가 부정 코인 +2
+    """
+
+    if damage_amount <= 0:
+        return
+
+    # unit → 감정 시스템 연결
+    atk_emotion = get_emotion_system_for(attacker)
+    def_emotion = get_emotion_system_for(defender)
+
+    # 기본 코인 획득
+    if atk_emotion is not None:
+        atk_emotion.gain_coin(pos=1, neg=0)  # 공격자는 긍정 코인
+    if def_emotion is not None:
+        def_emotion.gain_coin(pos=0, neg=1)  # 피격자는 부정 코인
+
+    # 킬 보너스
+    if is_kill:
+        if atk_emotion is not None:
+            atk_emotion.gain_coin(pos=2, neg=0)
+        if def_emotion is not None:
+            def_emotion.gain_coin(pos=0, neg=2)
+
 
 
 def create_ally_units():
@@ -274,7 +391,7 @@ def create_ally_units():
         (760, 480),  # 오른쪽 아래
     ]
 
-    for x, y in ally_positions:
+    for idx, (x, y) in enumerate(ally_positions):
         hp_res = {
             DamageType.SLASH: ResistLevel.NORMAL,
             DamageType.PIERCE: ResistLevel.NORMAL,
@@ -286,9 +403,15 @@ def create_ally_units():
             DamageType.BLUNT: ResistLevel.NORMAL,
         }
         u = Unit(x, y, 2, 5, True, None, 40, 20, hp_res, sp_res)
+
+        # ⭐ 테스트: 첫 번째 아군만 속도 주사위 2개
+        if idx == 0:
+            u.speed_dice_count = 2
+
         ally_group.add(u)
 
     return ally_group
+
 
 
 def create_enemies_from_stage(stage_code):
@@ -777,142 +900,150 @@ def draw_drag_arrow(surface, start_pos, end_pos, color=(80, 160, 255)):
 # ----------------------------
 # 합 시스템
 # ----------------------------
-def resolve_clash(dice_a: Dice, dice_b: Dice):
+def resolve_clash(dice_a, dice_b):
     """
-    라오루식 합 시스템.
-    dice_a, dice_b는 각각 owner(Unit), kind(DiceKind), damage_type 등을 가지고 있어야 한다.
-    이 함수는:
-      - 두 주사위를 굴리고
-      - 주사위 종류(공격/방어/회피) 조합에 따라
-      - 적절한 데미지/흐트러짐/회복을 적용한다.
+    dice_a: A 유닛의 주사위
+    dice_b: B 유닛의 주사위
+
+    합공 주사위 1회 판정 (감정코인 + 상태이상 트리거 포함)
     """
 
-    # --- 주사위 굴리기 ---
+    ua, ub = dice_a.owner, dice_b.owner
+    ka, kb = dice_a.kind, dice_b.kind
+
     va = dice_a.roll()
     vb = dice_b.roll()
 
-    ka = dice_a.kind
-    kb = dice_b.kind
+    # --- 공통 트리거: 롤 직후 ---
+    apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_ROLL)
+    apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_ROLL)
 
-    ua = dice_a.owner  # Unit
-    ub = dice_b.owner  # Unit
-
-    # 편의를 위해 값 차이
-    diff_ab = va - vb
-    diff_ba = vb - va
-
-    # ========= 1) 공격 vs 공격 =========
+    # ================================================================
+    # 1) ATTACK vs ATTACK
+    # ================================================================
     if ka == DiceKind.ATTACK and kb == DiceKind.ATTACK:
         if va > vb:
-            # A 승 → B가 A값만큼 피해
             ub.take_damage(va, dice_a.damage_type)
-            winner = "a"
+            is_kill = ub.is_dead
+            award_emotion_for_hit(ua, ub, va, is_kill)
+
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_WIN)
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_LOSS)
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_HIT)
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_BE_HIT)
+            return "a"
+
         elif vb > va:
             ua.take_damage(vb, dice_b.damage_type)
-            winner = "b"
-        else:
-            # 무승부: 둘 다 피해 없음 (감정코인 등은 나중에 이 분기에서 처리)
-            winner = "tie"
+            is_kill = ua.is_dead
+            award_emotion_for_hit(ub, ua, vb, is_kill)
 
-    # ========= 2) 공격 vs 방어 / 방어 vs 공격 =========
-    elif ka == DiceKind.ATTACK and kb == DiceKind.DEFENSE:
-        # A: 공격 / B: 방어
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_WIN)
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_LOSS)
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_HIT)
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_BE_HIT)
+            return "b"
+
+        else:
+            return "tie"
+
+    # ================================================================
+    # 2) ATTACK vs DEFENSE
+    # ================================================================
+    if ka == DiceKind.ATTACK and kb == DiceKind.DEFENSE:
         if va > vb:
-            # 방어 패배 → 방어측 HP,SP에 (공-방)만큼 직접 피해
-            ub.take_hp_sp_direct(diff_ab)
-            winner = "a"
-        elif vb > va:
-            # 방어 승리 → 공격측 SP에 (방-공)만큼 흐트러짐 피해
-            ua.take_sp_direct(diff_ba)
-            winner = "b"
-        else:
-            winner = "tie"
+            # 공격이 방어를 뚫고 직접 피해
+            ub.take_damage(va - vb, dice_a.damage_type)
+            is_kill = ub.is_dead
+            award_emotion_for_hit(ua, ub, va - vb, is_kill)
 
-    elif ka == DiceKind.DEFENSE and kb == DiceKind.ATTACK:
-        # A: 방어 / B: 공격 (위 로직과 대칭)
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_WIN)
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_LOSS)
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_HIT)
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_BE_HIT)
+            return "a"
+        else:
+            # 방어 승
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_WIN)
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_LOSS)
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_DEFEND)
+            return "b"
+
+    # ================================================================
+    # 3) ATTACK vs EVADE
+    # ================================================================
+    if ka == DiceKind.ATTACK and kb == DiceKind.EVADE:
         if va > vb:
-            # 방어 승리 → 공격측 SP에 (방-공)만큼 흐트러짐 피해
-            ub.take_sp_direct(diff_ab)
-            winner = "a"
-        elif vb > va:
-            # 방어 패배 → 방어측 HP,SP에 (공-방)만큼 직접 피해
-            ua.take_hp_sp_direct(diff_ba)
-            winner = "b"
-        else:
-            winner = "tie"
+            # 공격 성공
+            ub.take_damage(va, dice_a.damage_type)
+            is_kill = ub.is_dead
+            award_emotion_for_hit(ua, ub, va, is_kill)
 
-    # ========= 3) 방어 vs 방어 =========
-    elif ka == DiceKind.DEFENSE and kb == DiceKind.DEFENSE:
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_WIN)
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_LOSS)
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_HIT)
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_BE_HIT)
+            return "a"
+        else:
+            # 회피 성공 → 보통 피해 없음
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_WIN)
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_LOSS)
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_DODGE)
+            return "b"
+
+    # ================================================================
+    # 4) DEFENSE vs DEFENSE
+    # ================================================================
+    if ka == DiceKind.DEFENSE and kb == DiceKind.DEFENSE:
+        # 승패만, 피해 없음
         if va > vb:
-            # 승리한 방어 주사위 값만큼 상대 SP에 흐트러짐 피해
-            ub.take_sp_direct(va)
-            winner = "a"
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_WIN)
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_LOSS)
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_DEFEND)
+            return "a"
         elif vb > va:
-            ua.take_sp_direct(vb)
-            winner = "b"
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_WIN)
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_LOSS)
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_DEFEND)
+            return "b"
         else:
-            winner = "tie"
+            return "tie"
 
-    # ========= 4) 방어 vs 회피 / 회피 vs 방어 =========
-    elif ka == DiceKind.DEFENSE and kb == DiceKind.EVADE:
+    # ================================================================
+    # 5) DEFENSE vs EVADE
+    # ================================================================
+    if ka == DiceKind.DEFENSE and kb == DiceKind.EVADE:
         if va > vb:
-            # 방어 승리 → 방어값만큼 상대 SP 흐트러짐 피해
-            ub.take_sp_direct(va)
-            winner = "a"
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_WIN)
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_LOSS)
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_DEFEND)
+            return "a"
         elif vb > va:
-            # 회피 승리 → 회피값만큼 회피측 SP 회복
-            ub.recover_sp(vb)
-            winner = "b"
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_WIN)
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_LOSS)
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_DODGE)
+            return "b"
         else:
-            winner = "tie"
+            return "tie"
 
-    elif ka == DiceKind.EVADE and kb == DiceKind.DEFENSE:
+    # ================================================================
+    # 6) EVADE vs EVADE
+    # ================================================================
+    if ka == DiceKind.EVADE and kb == DiceKind.EVADE:
+        # 피해 없음, 승패만 존재
         if va > vb:
-            # 회피 승리 → 회피값만큼 회피측 SP 회복
-            ua.recover_sp(va)
-            winner = "a"
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_WIN)
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_LOSS)
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_DODGE)
+            return "a"
         elif vb > va:
-            # 방어 승리 → 방어값만큼 상대 SP 흐트러짐 피해
-            ua.take_sp_direct(vb)
-            winner = "b"
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_WIN)
+            apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_LOSS)
+            apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_DODGE)
+            return "b"
         else:
-            winner = "tie"
+            return "tie"
 
-    # ========= 5) 회피 vs 공격 / 공격 vs 회피 =========
-    elif ka == DiceKind.EVADE and kb == DiceKind.ATTACK:
-        if va > vb:
-            # 회피 승리 → 회피값만큼 SP 회복 (재사용 효과는 나중에 구현 가능)
-            ua.recover_sp(va)
-            winner = "a"
-        elif vb > va:
-            # 공격 승리 → 체력 + 흐트러짐 피해 (공격 주사위 값만큼)
-            ua.take_hp_sp_direct(vb)
-            winner = "b"
-        else:
-            winner = "tie"
-
-    elif ka == DiceKind.ATTACK and kb == DiceKind.EVADE:
-        if va > vb:
-            # 공격 승리
-            ub.take_hp_sp_direct(va)
-            winner = "a"
-        elif vb > va:
-            # 회피 승리 → SP 회복
-            ub.recover_sp(vb)
-            winner = "b"
-        else:
-            winner = "tie"
-
-    # ========= 6) 회피 vs 회피 =========
-    elif ka == DiceKind.EVADE and kb == DiceKind.EVADE:
-        # 둘 다 소멸, 효과 없음 (감정코인/부가효과는 나중에 추가 가능)
-        winner = "tie"
-
-    else:
-        # 정의되지 않은 조합 (혹시 모를 예외용)
-        winner = "unknown"
-
-    return winner, va, vb
 
 def is_unit_alive_and_present(u):
     """데미지/행동 처리 가능한 '대상'인지 확인 (죽거나 도주했으면 False)."""
@@ -938,7 +1069,7 @@ def can_unit_roll_dice(u):
 def build_dice_list_for_page(page: CombatPage, owner):
     """
     CombatPage의 dice_list를 실제 Dice 객체 리스트로 변환.
-    (EffectSpec은 지금은 무시)
+    각 Dice는 spec.effect(EffectSpec)를 들고 있게 만든다.
     """
     dice_list = []
     for spec in page.dice_list:
@@ -948,17 +1079,14 @@ def build_dice_list_for_page(page: CombatPage, owner):
             min_value=spec.min_value,
             max_value=spec.max_value,
             damage_type=spec.damage_type,
+            effect=spec.effect,
         )
         dice_list.append(d)
     return dice_list
 
 
+
 def resolve_one_sided_attack(dice: Dice, attacker, defender):
-    """
-    일방 공격 처리.
-    - ATTACK 주사위만 피해를 줌.
-    - DEFENSE / EVADE 주사위는 아무 역할 X (그냥 소모).
-    """
     if not can_unit_roll_dice(attacker):
         return
     if not is_unit_alive_and_present(defender):
@@ -966,14 +1094,16 @@ def resolve_one_sided_attack(dice: Dice, attacker, defender):
 
     val = dice.roll()
 
-    # 공격 주사위만 실제 피해
     if dice.kind == DiceKind.ATTACK:
         dmg_type = dice.damage_type or DamageType.SLASH
         defender.take_damage(val, dmg_type)
-        # print(f"[일방공격] {attacker} → {defender}, 값={val}")
+
+        # 🔹 일방 공격도 감정 코인 지급
+        award_emotion_for_hit(attacker, defender, val, defender.is_dead)
     else:
-        # 방어/회피 주사위는 일방공격에서 아무 효과 없음
         pass
+
+
 
 def resolve_clash_between_units(unit_a, unit_b):
     """
@@ -1062,6 +1192,8 @@ def execute_scene_actions(all_units, ally_group, enemy_group):
     """
     이번 막에서 모든 planned_page / planned_target을
     속도 순서대로 처리하고, 막을 종료하는 함수.
+    속도 주사위 개수(speed_dice_count)가 2 이상이라면,
+    그만큼 여러 번 행동할 수 있다.
     """
     # 1) 합공 쌍 찾기
     mutual_pairs = find_mutual_target_pairs(ally_group, enemy_group)
@@ -1071,7 +1203,8 @@ def execute_scene_actions(all_units, ally_group, enemy_group):
         units_in_pairs.add(e)
 
     # 2) 액션 리스트 구성
-    #    ("clash", 속도, 유닛A, 유닛B) 또는 ("one_sided", 속도, 공격자, 피격자)
+    #    (kind, speed, 공격자/유닛A, 피격자/유닛B)
+    #    kind = "clash" 또는 "one_sided"
     actions = []
 
     # 합공 액션들
@@ -1079,9 +1212,25 @@ def execute_scene_actions(all_units, ally_group, enemy_group):
         spd_a = getattr(a, "current_speed", 0) or 0
         spd_e = getattr(e, "current_speed", 0) or 0
         effective_speed = max(spd_a, spd_e)
+
+        # 기본 1번은 합공으로 처리
         actions.append(("clash", effective_speed, a, e))
 
-    # 일방 공격 액션들
+        # 남은 속도 주사위 개수만큼은 일방 공격으로 한 번 더 행동
+        extra_a = max(0, getattr(a, "speed_dice_count", 1) - 1)
+        extra_e = max(0, getattr(e, "speed_dice_count", 1) - 1)
+
+        target_a = getattr(a, "planned_target", None) or e
+        target_e = getattr(e, "planned_target", None) or a
+
+        for _ in range(extra_a):
+            if is_unit_alive_and_present(a) and is_unit_alive_and_present(target_a):
+                actions.append(("one_sided", spd_a, a, target_a))
+        for _ in range(extra_e):
+            if is_unit_alive_and_present(e) and is_unit_alive_and_present(target_e):
+                actions.append(("one_sided", spd_e, e, target_e))
+
+    # 일방 공격 액션들 (합공에 포함되지 않은 유닛들)
     for u in all_units:
         if u in units_in_pairs:
             continue
@@ -1093,13 +1242,19 @@ def execute_scene_actions(all_units, ally_group, enemy_group):
             continue
 
         spd = getattr(u, "current_speed", 0) or 0
-        actions.append(("one_sided", spd, u, target))
+        extra = max(1, getattr(u, "speed_dice_count", 1))
+        for _ in range(extra):
+            if not is_unit_alive_and_present(u) or not is_unit_alive_and_present(target):
+                break
+            actions.append(("one_sided", spd, u, target))
 
     # 3) 속도 내림차순 정렬 (빠른 순서대로 처리)
     actions.sort(key=lambda x: x[1], reverse=True)
 
     # 4) 실제 처리
     for kind, _, a, b in actions:
+        if not is_unit_alive_and_present(a) or not is_unit_alive_and_present(b):
+            continue
         if kind == "clash":
             resolve_clash_between_units(a, b)
         elif kind == "one_sided":
@@ -1172,6 +1327,15 @@ def run_battle(screen, stage_code):
     running = True
     result = None  # 전투 결과
 
+    # 감정 시스템 생성
+    player_emotion = BattleEmotionSystem(is_player_side=True)
+    enemy_emotion = BattleEmotionSystem(is_player_side=False)
+
+    # 전역으로도 참조 가능하게 연결
+    global PLAYER_EMOTION, ENEMY_EMOTION
+    PLAYER_EMOTION = player_emotion
+    ENEMY_EMOTION = enemy_emotion
+
     # 감정 UI 색상
     EMOTION_BG = (30, 30, 50)
     EMOTION_BORDER = (200, 200, 220)
@@ -1180,12 +1344,12 @@ def run_battle(screen, stage_code):
     EMOTION_NEG_COLOR = (255, 120, 140)  # 부정 코인 색
 
     def draw_emotion_ui(surface, font, player_emotion: BattleEmotionSystem, enemy_emotion: BattleEmotionSystem):
-        """화면 양쪽 위에 감정단계를 표시"""
+        """화면 양쪽 위에 감정단계 + 감정 코인을 표시"""
 
         width, height = surface.get_size()
 
-        box_w = 140
-        box_h = 60
+        box_w = 180
+        box_h = 80
         margin = 10
 
         # ----- 왼쪽 위: 적 감정 -----
@@ -1201,6 +1365,9 @@ def run_battle(screen, stage_code):
         enemy_lv = font.render(f"Lv. {enemy_emotion.level}", True, EMOTION_TEXT)
         surface.blit(enemy_lv, (ex + 10, ey + 28))
 
+        enemy_coin = font.render(f"코인 +{enemy_emotion.positive} / -{enemy_emotion.negative}", True, EMOTION_TEXT)
+        surface.blit(enemy_coin, (ex + 10, ey + 50))
+
         # ----- 오른쪽 위: 아군 감정 -----
         px = width - box_w - margin
         py = margin
@@ -1214,8 +1381,9 @@ def run_battle(screen, stage_code):
         player_lv = font.render(f"Lv. {player_emotion.level}", True, EMOTION_TEXT)
         surface.blit(player_lv, (px + 10, py + 28))
 
-        # (선택) 코인 표시도 넣고 싶으면 아래처럼 간단하게 점 두 줄 정도로 표현할 수 있음.
-        # 지금은 감정단계만 필요한 것 같으니 생략해도 됨.
+        player_coin = font.render(f"코인 +{player_emotion.positive} / -{player_emotion.negative}", True, EMOTION_TEXT)
+        surface.blit(player_coin, (px + 10, py + 50))
+
 
     while running:
         dt = clock.tick(60)
