@@ -40,10 +40,16 @@ def end_scene(all_units):
     """
     막 종료 시 호출.
     - 화상/출혈 등 상태이상 처리 및 지속시간 감소
+    - 각 유닛이 책장 1장씩 추가로 뽑음
     """
     for u in all_units:
         if hasattr(u, "on_scene_end"):
             u.on_scene_end()
+
+        # ✅ 덱이 있는 유닛이라면 막 종료 시 카드 1장 뽑기
+        if hasattr(u, "draw_cards"):
+            u.draw_cards(1)
+
 
 # ----------------------------
 # Dice 클래스
@@ -269,6 +275,48 @@ def create_enemies_from_stage(stage_code):
     return enemy_group
 
 
+def plan_enemy_actions(enemy_group, ally_group):
+    """
+    이번 막에서 적들이 어떤 책장으로 누구를 공격할지 미리 정해둔다.
+    - 본인이 가진 hand 중에서 코스트가 현재 빛(self.light) 이하인 책장만 후보
+    - 그 중 하나를 랜덤 선택
+    - 아군 중 살아있는 유닛 하나를 랜덤 선택해서 타깃으로 지정
+    """
+    # 현재 살아있는 아군 목록
+    alive_allies = [a for a in ally_group if not a.is_dead and not a.is_escaped]
+
+    for e in enemy_group:
+        # 기본값 초기화
+        if hasattr(e, "planned_page"):
+            e.planned_page = None
+        if hasattr(e, "planned_target"):
+            e.planned_target = None
+
+        if e.is_dead or e.is_escaped:
+            continue
+        if not alive_allies:
+            continue
+
+        hand = getattr(e, "hand", None)
+        if not hand:
+            continue
+
+        current_light = getattr(e, "light", 0)
+
+        # 현재 빛으로 사용할 수 있는 책장만 필터링
+        affordable = [p for p in hand if p.cost <= current_light]
+
+        if not affordable:
+            continue
+
+        page = random.choice(affordable)
+        target = random.choice(alive_allies)
+
+        e.planned_page = page
+        e.planned_target = target
+
+
+
 def draw_unit_info_panel(surface, font, hovered_unit):
     """지금까지 쓰던 내성 패널 그대로 가져옴"""
     if hovered_unit is None:
@@ -315,6 +363,85 @@ def draw_unit_info_panel(surface, font, hovered_unit):
         surf = font.render(text, True, WHITE)
         surface.blit(surf, (panel_x + 10, offset_y))
         offset_y += line_height
+
+
+def draw_speed_hover_info(surface, font, hovered_speed_unit):
+    """
+    속도 코인 위에 마우스를 올렸을 때 표시할 정보.
+    - 아군: 현재 손패(뽑아서 들고 있는 책장들)
+    - 적군: 이번 막에 사용 예정인 공격(책장)
+    """
+    if hovered_speed_unit is None:
+        return
+
+    width, height = surface.get_size()
+    center_x = width // 2
+    base_y = height - 40  # 화면 아래쪽 위치
+
+    if hovered_speed_unit.is_ally:
+        # ✅ 아군: '전체 덱'이 아니라 '현재 손패'만 표시
+        hand = getattr(hovered_speed_unit, "hand", None)
+        if hand:
+            names = [p.name for p in hand]
+            text = "현재 손패: " + " / ".join(names)
+        else:
+            text = "현재 손패가 없습니다."
+    else:
+        # ✅ 적: 이번 막에 사용하려는 공격 책장
+        planned = getattr(hovered_speed_unit, "planned_page", None)
+        if planned is not None:
+            text = f"현재 예정 공격: {planned.name} (코스트 {planned.cost})"
+        else:
+            text = "현재 예정된 공격이 없습니다."
+
+    info_surf = font.render(text, True, WHITE)
+    surface.blit(
+        info_surf,
+        (center_x - info_surf.get_width() // 2, base_y),
+    )
+
+
+
+def draw_enemy_target_arrows(surface, enemy_group):
+    """
+    적 유닛이 계획한 공격 방향을 빨간색 화살표로 그린다.
+    - planned_page, planned_target 이 설정된 적만 표시
+    """
+    ARROW_COLOR = (255, 80, 80)
+
+    for e in enemy_group:
+        target = getattr(e, "planned_target", None)
+        if target is None:
+            continue
+        if e.is_dead or e.is_escaped:
+            continue
+        if target.is_dead or target.is_escaped:
+            continue
+
+        start = e.rect.center
+        end = target.rect.center
+
+        # 기본 선
+        pygame.draw.line(surface, ARROW_COLOR, start, end, 3)
+
+        # 간단한 화살촉 (끝점 근처에 작은 삼각형)
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        length = max((dx * dx + dy * dy) ** 0.5, 1)
+        ux, uy = dx / length, dy / length
+
+        # 화살촉 기준점
+        base_x = end[0] - ux * 12
+        base_y = end[1] - uy * 12
+
+        # 좌우로 벌어진 두 점
+        perp_x, perp_y = -uy, ux
+        left = (base_x + perp_x * 6, base_y + perp_y * 6)
+        right = (base_x - perp_x * 6, base_y - perp_y * 6)
+
+        pygame.draw.polygon(surface, ARROW_COLOR, [end, left, right])
+
+
 
 # ----------------------------
 # 합 시스템
@@ -457,6 +584,25 @@ def resolve_clash(dice_a: Dice, dice_b: Dice):
     return winner, va, vb
 
 
+def init_decks_for_units(ally_group, enemy_group):
+    """
+    아군/적군 유닛에게 각각 9장의 책장을 랜덤으로 배정하고,
+    시작할 때 손패 3장을 뽑는다.
+    (지금은 모든 책장을 COMBAT_PAGES 전체에서 랜덤으로 뽑는 구조)
+    """
+    all_pages = list(COMBAT_PAGES.values())
+
+    for u in list(ally_group) + list(enemy_group):
+        if not hasattr(u, "set_deck"):
+            continue
+
+        # 같은 책장을 여러 장 가질 수 있도록 choice 9번
+        deck = [random.choice(all_pages) for _ in range(9)]
+        u.set_deck(deck)
+        u.draw_cards(3)
+
+
+
 def run_battle(screen, stage_code):
     """
     전투 씬 메인 루프.
@@ -481,8 +627,13 @@ def run_battle(screen, stage_code):
         e.ally_group = enemy_group
         e.enemy_group = ally_group
 
-    scene_index = 1          # 현재 막 번호
-    scene_started = False    # 막이 시작됐는지 여부
+    #  전투 시작 시 각 유닛에게 책장 9장 배정 + 손패 3장
+    init_decks_for_units(ally_group, enemy_group)
+
+    scene_index = 1  # 현재 막 번호
+    scene_started = False  # 막이 시작됐는지 여부
+
+    show_enemy_arrows = False  # 1번 키로 토글하는 표시 여부
 
     player_emotion = BattleEmotionSystem(is_player_side=True)
     enemy_emotion = BattleEmotionSystem(is_player_side=False)
@@ -539,10 +690,14 @@ def run_battle(screen, stage_code):
         dt = clock.tick(60)
 
         # --- 막이 아직 시작되지 않았으면 여기서 시작 처리 ---
+        # --- 막이 아직 시작되지 않았으면 여기서 시작 처리 ---
         if not scene_started:
             start_scene(scene_index, all_units)
-            scene_started = True
 
+            # ✅ 새 막 시작 시 적 행동 계획 세우기
+            plan_enemy_actions(enemy_group, ally_group)
+
+            scene_started = True
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -588,6 +743,10 @@ def run_battle(screen, stage_code):
                             defender = e
                             break
 
+                    # 1번 키: 적이 누구를 노리고 있는지 화살표 표시 토글
+                    if event.key == pygame.K_1:
+                        show_enemy_arrows = not show_enemy_arrows
+
                     if attacker is not None and defender is not None:
                         # 예시: 아군 공격 주사위 (3~7 참격), 적 방어 주사위 (2~5)
                         atk_dice = Dice(attacker, DiceKind.ATTACK, 3, 7, DamageType.SLASH)
@@ -610,9 +769,25 @@ def run_battle(screen, stage_code):
 
         mouse_pos = pygame.mouse.get_pos()
         hovered_unit = None
+        hovered_speed_unit = None
+
+        # 1) 본체 스프라이트 기준 hover (오른쪽 패널용)
         for u in all_units:
             if u.rect.collidepoint(mouse_pos):
                 hovered_unit = u
+                break
+
+        # 2) 속도 코인 기준 hover (손패/예정 공격 표시용)
+        for u in all_units:
+            # speed token 중심과 반지름은 unit.draw_speed_token과 동일하게 사용
+            cx = u.rect.centerx
+            cy = u.rect.top - 40
+            radius = 28
+
+            dx = mouse_pos[0] - cx
+            dy = mouse_pos[1] - cy
+            if dx * dx + dy * dy <= radius * radius:
+                hovered_speed_unit = u
                 break
 
         # 그리기
@@ -632,8 +807,15 @@ def run_battle(screen, stage_code):
         for u in all_units:
             u.draw(screen, font)
 
+        # ✅ 적 → 아군 공격 방향 화살표
+        if show_enemy_arrows:
+            draw_enemy_target_arrows(screen, enemy_group)
+
         # 마우스 올린 유닛 정보 패널
         draw_unit_info_panel(screen, font, hovered_unit)
+
+        # 속도 코인 위에 마우스를 올렸을 때 손패/예정 공격 표시
+        draw_speed_hover_info(screen, font, hovered_speed_unit)
 
         pygame.display.flip()
 

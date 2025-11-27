@@ -146,6 +146,18 @@ class Unit(pygame.sprite.Sprite):
 
         self.status_effects = []
 
+        # --- 카드(책장) 시스템 ---
+        # deck_all : 이 유닛이 전투 시작 시 가지고 있는 전체 책장 9장
+        # draw_pile: 아직 뽑지 않은 덱 (기본적으로 deck_all 복사본)
+        # hand     : 현재 손에 들고 있는 책장
+        self.deck_all = []
+        self.draw_pile = []
+        self.hand = []
+
+        # 적 AI용: 이번 막에 사용할 예정인 책장과 타깃
+        self.planned_page = None
+        self.planned_target = None
+
         # --- 빛 시스템 ---
         # 라오루 기준 기본은 3빛, 감정 1단계에서 +1 → 4빛 되는 구조
         self.max_light = 3
@@ -260,6 +272,36 @@ class Unit(pygame.sprite.Sprite):
         self.max_light += amount
         if fill:
             self.light = self.max_light
+
+
+    # =============================
+    # 카드(책장) 관련 메서드
+    # =============================
+    def set_deck(self, pages):
+        """
+        이 유닛의 덱을 설정한다.
+        pages: CombatPage 객체 9개(같은 페이지 여러 번 들어가도 됨).
+        """
+        # 전체 덱(정보용)과 실제 뽑기용 덱을 분리
+        self.deck_all = list(pages)
+        self.draw_pile = list(pages)
+        self.hand = []
+
+    def draw_cards(self, count: int):
+        """
+        덱에서 count장 만큼 뽑아 손패에 넣는다.
+        draw_pile이 부족하면 가능한 만큼만 뽑는다.
+        (지금은 버림더미 개념은 없고, 단순히 남은 덱에서만 뽑는 구조)
+        """
+        import random
+
+        for _ in range(count):
+            if not self.draw_pile:
+                break
+            page = random.choice(self.draw_pile)
+            self.draw_pile.remove(page)
+            self.hand.append(page)
+
 
 
     # =============================
