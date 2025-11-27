@@ -3,7 +3,7 @@ import pygame
 import random
 
 from unit import (
-    Unit, DamageType, ResistLevel, DAMAGE_NAME_KO,
+    Unit, ResistLevel, DAMAGE_NAME_KO,
     WHITE, PANEL_BG, DiceKind, DamageType, StatusType
 )
 from stages import STAGES
@@ -183,6 +183,32 @@ def use_page(page: CombatPage, user, allies, enemies):
             # 추후: ON_HIT 효과 여기서 eff.trigger == EffectTrigger.ON_HIT이면 적용
 
 
+def build_dice_summary_lines(page: CombatPage):
+    """
+    CombatPage → ["참격 1~4", "방어 2~6", "회피 1~14"] 같은 리스트로 변환
+    """
+    lines = []
+
+    for dice in page.dice_list:
+        # 주사위 종류
+        if dice.kind == DiceKind.ATTACK:
+            dtype = DAMAGE_NAME_KO.get(dice.damage_type, "")
+            kind_name = dtype
+        elif dice.kind == DiceKind.DEFENSE:
+            kind_name = "방어"
+        elif dice.kind == DiceKind.EVADE:
+            kind_name = "회피"
+        else:
+            kind_name = "주사위"
+
+        # 범위값
+        val = f"{dice.min_value}~{dice.max_value}"
+
+        lines.append(f"{kind_name} {val}")
+
+    return lines
+
+
 # ----------------------------
 # 감정고조
 # ----------------------------
@@ -334,62 +360,94 @@ def update_counter_target_on_attack(attacker, defender):
     공격자(attacker)가 defender를 타겟팅했을 때,
     defender가 누구를 노릴지(반타겟)를 갱신하는 함수.
 
-    기본 규칙:
-    1) 공격자의 속도가 defender보다 느리거나 같으면 타겟 변경 없음.
-    2) 공격자의 속도가 defender보다 빠를 때만 타겟 변경을 고려.
-    3) 기존 타겟이 없거나, 죽었거나, 같은 팀이면 공격자로 변경.
-    4) 기존 타겟이 살아 있고 적 팀일 때는
-       공격자 속도 > 기존 타겟 속도일 때만 갈아탄다.
+    규칙 정리:
 
-    + 추가 규칙(너가 말한 부분):
-    A) defender.initial_target 이 이번 공격자라면
-       속도와 상관없이 무조건 그 공격자로 타겟을 되돌린다.
+    1) 공격자의 속도가 defender보다 느리거나 같으면 → 타겟 변경 없음.
+       (attacker_speed <= defender_speed 이면 그대로 유지)
+
+    2) 공격자의 속도가 defender보다 빠르면 → 무조건 공격자로 갈아탄다.
+       (attacker_speed > defender_speed 이면 defender.planned_target = attacker)
+
+    3) 단, defender.initial_target 이 공격자라면
+       속도와 관계없이 무조건 그 공격자로 되돌린다.
     """
     if attacker is None or defender is None:
         return
     if attacker.is_dead or attacker.is_escaped or defender.is_dead or defender.is_escaped:
         return
-    # 같은 팀은 반타겟팅 안 함
+
+    # 같은 팀이면 반타겟팅 안 함
     if attacker.is_ally == defender.is_ally:
         return
 
     atk_spd = getattr(attacker, "current_speed", None)
     def_spd = getattr(defender, "current_speed", None)
 
-    # ✅ [추가 규칙 A] 처음에 노리던 애가 나를 때리면 무조건 그 애로 되돌리기
+    # ✅ [규칙 3] 처음에 노리던 애가 나를 때리면 → 속도 상관없이 그 애로 되돌리기
     initial = getattr(defender, "initial_target", None)
     if initial is attacker:
         defender.planned_target = attacker
         return
 
-    # 여기부터는 기존 “속도 기반 역타겟팅” 규칙
-
+    # 속도 정보 없으면 안전하게 무시
     if atk_spd is None or def_spd is None:
         return
 
-    # 1) 공격자가 나보다 느리거나 같으면 → 타겟 유지
+    # ✅ [규칙 1] 공격자가 나보다 느리거나 같으면 타겟 유지
     if atk_spd <= def_spd:
         return
 
-    current = getattr(defender, "planned_target", None)
+    # ✅ [규칙 2] 공격자가 나보다 빠르면 무조건 그 공격자로 갈아탄다
+    defender.planned_target = attacker
 
-    # 3) 기존 타겟이 없거나, 죽었거나, 같은 팀이면 → 공격자로 변경
-    if current is None or current.is_dead or current.is_escaped or current.is_ally == defender.is_ally:
-        defender.planned_target = attacker
+
+def retarget_defender_after_cancel(defender, all_units):
+    """
+    어떤 유닛이 defender를 향한 공격을 취소했을 때,
+    defender의 planned_target을 다시 잡아주는 함수.
+
+    규칙:
+      1) defender를 현재 타겟팅 중인 유닛들 중
+         (살아 있고, 반대 진영이며, 속도가 정해진 유닛)
+         가장 속도가 빠른 유닛이 있다면 그 유닛으로 타겟 변경
+         → 합공 상태 형성 (서로를 노리게 됨)
+
+      2) 그런 유닛이 없다면 defender.initial_target 으로 복귀
+         (initial_target이 살아 있을 때만)
+    """
+    if defender is None:
+        return
+    if defender.is_dead or defender.is_escaped:
         return
 
-    cur_spd = getattr(current, "current_speed", None)
+    best_attacker = None
+    best_speed = -1
 
-    if cur_spd is None:
-        defender.planned_target = attacker
-        return
+    for u in all_units:
+        if u is defender:
+            continue
+        if u.is_dead or u.is_escaped:
+            continue
 
-    # 4) 공격자가 기존 타겟보다 빠른 경우에만 갈아탄다
-    if atk_spd > cur_spd:
-        defender.planned_target = attacker
-    # 아니면 그대로 유지
+        # 나를 타겟팅 중인 유닛인지, 그리고 반대 진영인지 확인
+        if getattr(u, "planned_target", None) is defender and (u.is_ally != defender.is_ally):
+            spd = getattr(u, "current_speed", None)
+            if spd is None:
+                continue
+            if spd > best_speed:
+                best_speed = spd
+                best_attacker = u
 
-
+    if best_attacker is not None:
+        # 가장 빠른 공격자와 합공
+        defender.planned_target = best_attacker
+    else:
+        # 아무도 나를 안 때리면 → 원래 타겟으로 복귀
+        initial = getattr(defender, "initial_target", None)
+        if initial is not None and not initial.is_dead and not initial.is_escaped:
+            defender.planned_target = initial
+        else:
+            defender.planned_target = None
 
 
 def draw_unit_info_panel(surface, font, hovered_unit):
@@ -533,6 +591,9 @@ def draw_hand_cards(surface, font, owner, selected_unit, mouse_pos):
     - selected_unit: 현재 선택된 유닛(카드 인터랙션 가능한 대상)
     - mouse_pos: 마우스 위치 (hover 시 카드 확대)
     """
+
+    small_font = pygame.font.SysFont("malgungothic", 18)
+
     width, height = surface.get_size()
     pages = get_hand_pages_for_owner(owner, selected_unit)
     card_infos = build_hand_card_rects(pages, width, height)
@@ -588,17 +649,23 @@ def draw_hand_cards(surface, font, owner, selected_unit, mouse_pos):
             continue
 
         # 카드 텍스트: 맨 위 이름, 그 아래 코스트
-        name_text = font.render(page.name, True, (0, 0, 0))
-        cost_text = font.render(f"코스트 {page.cost}", True, (0, 0, 0))
+        name_text = small_font.render(page.name, True, (0, 0, 0))
+        cost_text = small_font.render(f"코스트 {page.cost}", True, (0, 0, 0))
 
-        surface.blit(
-            name_text,
-            (draw_rect.x + 8, draw_rect.y + 8)
-        )
-        surface.blit(
-            cost_text,
-            (draw_rect.x + 8, draw_rect.y + 36)
-        )
+        surface.blit(name_text, (draw_rect.x + 8, draw_rect.y + 8))
+        surface.blit(cost_text, (draw_rect.x + 8, draw_rect.y + 36))
+
+        # --- 주사위 정보 한 줄씩 그리기 ---
+        dice_lines = build_dice_summary_lines(page)
+
+        # 시작 Y 위치 (코스트 아래부터)
+        line_y = draw_rect.y + 64
+        line_h = 22  # 줄 간격
+
+        for line in dice_lines:
+            txt = small_font.render(line, True, (0, 0, 0))
+            surface.blit(txt, (draw_rect.x + 8, line_y))
+            line_y += line_h
 
     return card_infos
 
@@ -1064,11 +1131,20 @@ def run_battle(screen, stage_code):
                     if clicked_unit is not None:
                         # (a) 이미 공격 계획이 있는 아군 → 계획 취소 + 카드 되돌리기
                         if clicked_unit.is_ally and getattr(clicked_unit, "planned_page", None) is not None:
+                            # ✅ 취소하기 전에 내가 노리던 대상(적)을 저장
+                            old_target = getattr(clicked_unit, "planned_target", None)
+
                             page = clicked_unit.planned_page
                             if page is not None:
                                 clicked_unit.hand.append(page)
+
                             clicked_unit.planned_page = None
                             clicked_unit.planned_target = None
+
+                            # ✅ 이제 그 적의 타겟팅을 다시 계산
+                            if old_target is not None:
+                                retarget_defender_after_cancel(old_target, all_units)
+
                             continue
 
                         # (b) 현재 선택된 유닛을 우클릭 → 선택 해제
