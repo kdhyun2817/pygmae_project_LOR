@@ -142,12 +142,18 @@ class Unit(pygame.sprite.Sprite):
         self.can_act = True
 
         # 🔹 속도 관련
-        self.current_speed = None  # 공격할 때 기준이 되는 속도(공격 토큰)
-        self.defense_speed = None  # 공격을 받을 때 기준이 되는 속도(방어 토큰)
-        self.speed_values = []  # 실제 굴린 속도 값 리스트 (토큰별)
+        self.current_speed = None
+        self.defense_speed = None
+        self.speed_values = []
+
+        # 🔹 토큰별 공격 계획: token_index -> {"page": CombatPage, "target": Unit}
+        self.token_plans = {}
 
         # 🔹 이번 막에 공격에 사용 중인 토큰 인덱스(화살표 시작 위치용)
         self.attack_token_index = None
+
+        # 🔹 이번 막에 방어에 사용 중인 토큰 인덱스(화살표 끝 위치용)
+        self.defense_token_index = None
 
         # 전투 그룹 참조 (흐트러짐 시 동료에게 효과를 전달하는 기능 등에서 사용)
         self.ally_group = None
@@ -184,6 +190,12 @@ class Unit(pygame.sprite.Sprite):
         self.max_light = 3
         self.light = 3
 
+        # --- 빛 예약(플레이 계획용) ---
+        # 여러 토큰이 책장을 예약할 때, 실제로는 나중에 소모되지만
+        # UI 상에서는 미리 빠진 것처럼 보이게 하기 위한 임시 값
+        self.light_reserved = 0  # 예약된 빛 총합
+        self.light_reserved_per_token = {}  # token_index -> cost
+        self.light_blink_timer = 0  # 빛 UI 깜빡임 시간(프레임 카운트)
 
 
         # --- 내성 (HP/SP 분리) ---
@@ -268,15 +280,33 @@ class Unit(pygame.sprite.Sprite):
             self.current_speed = max(self.speed_values)
             # 🔹 방어용 토큰 속도 (가장 낮은 속도)
             self.defense_speed = min(self.speed_values)
+            # 🔹 기본 공격/방어 토큰 인덱스도 같이 지정
+            try:
+                self.attack_token_index = self.speed_values.index(self.current_speed)
+            except ValueError:
+                self.attack_token_index = None
+            try:
+                self.defense_token_index = self.speed_values.index(self.defense_speed)
+            except ValueError:
+                self.defense_token_index = None
         else:
             self.current_speed = None
             self.defense_speed = None
+            self.attack_token_index = None
+            self.defense_token_index = None
 
     def reset_speed_for_new_turn(self):
-        """새 막 시작 시 속도 주사위를 다시 굴릴 수 있도록 초기화."""
         self.current_speed = None
         self.defense_speed = None
         self.speed_values = []
+        self.attack_token_index = None
+        self.defense_token_index = None
+        self.token_plans = {}
+
+        # 새 막 시작할 때 빛 예약도 초기화
+        self.light_reserved = 0
+        self.light_reserved_per_token = {}
+        self.light_blink_timer = 0
 
     # =============================
     # 상태이상 리스트
@@ -680,31 +710,52 @@ class Unit(pygame.sprite.Sprite):
         if self.max_light <= 0:
             return
 
-        # 마름모들 간 간격과 크기
-        spacing = 16   # 마름모 사이 간격
-        size = 4       # 마름모 한 변의 '반' 길이
+        spacing = 16
+        size = 4
 
-        # 전체 너비 계산해 가운데 정렬
         total_width = (self.max_light - 1) * spacing
         start_x = self.rect.centerx - total_width / 2
-
-        # 위치: 캐릭터 머리 조금 위 (속도 토큰보다 약간 아래/위는 취향대로)
         y = self.rect.top - 12
+
+        # 🔹 실제 논리상의 빛(self.light)은 건들지 않고,
+        #     '예약된 빛(light_reserved)'만큼 UI에서 미리 빠진 것처럼 보이게 한다.
+        reserved = getattr(self, "light_reserved", 0)
+        effective_light = max(0, self.light - reserved)
+
+        # 🔹 깜빡임: 예약이 갓 생겼을 때 일정 시간 동안 반짝이게
+        # 🔹 깜빡임: 예약된 빛이 있는 동안 계속 반짝이게
+        blink_on = False
+        if reserved > 0:
+            # pygame 전체 시간 기준으로 on/off (약 0.2초 주기)
+            ticks = pygame.time.get_ticks()
+            if (ticks // 200) % 2 == 0:
+                blink_on = True
+
+        # 몇 개가 예약되어 있는지 (빈 칸 중 깜빡일 개수)
+        reserved_count = int(reserved)
 
         for i in range(self.max_light):
             cx = start_x + i * spacing
             points = [
-                (cx, y - size),       # 위
-                (cx + size, y),       # 오른쪽
-                (cx, y + size),       # 아래
-                (cx - size, y),       # 왼쪽
+                (cx, y - size),
+                (cx + size, y),
+                (cx, y + size),
+                (cx - size, y),
             ]
 
-            # 현재 빛 개수만큼은 채운 색, 나머지는 빈 색
-            if i < int(self.light):
+            if i < int(effective_light):
+                # 실제 사용 가능한 빛 부분
                 fill_color = LIGHT_FULL_COLOR
             else:
+                # 여기부터는 빈 칸
                 fill_color = LIGHT_EMPTY_COLOR
+
+                # 빈 칸 중에서 '예약된 빛' 만큼은 깜빡이게
+                # 예: effective_light = 2, reserved = 1 → i == 2인 칸이 깜빡
+                if (blink_on and
+                        i >= int(effective_light) and
+                        i < int(effective_light) + reserved_count):
+                    fill_color = (255, 255, 200)  # 조금 더 밝게 반짝
 
             pygame.draw.polygon(surface, fill_color, points)
             pygame.draw.polygon(surface, LIGHT_BORDER_COLOR, points, 1)
