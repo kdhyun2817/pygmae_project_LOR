@@ -141,7 +141,13 @@ class Unit(pygame.sprite.Sprite):
         self.is_staggered = False
         self.can_act = True
 
-        self.current_speed = None
+        # 🔹 속도 관련
+        self.current_speed = None  # 공격할 때 기준이 되는 속도(공격 토큰)
+        self.defense_speed = None  # 공격을 받을 때 기준이 되는 속도(방어 토큰)
+        self.speed_values = []  # 실제 굴린 속도 값 리스트 (토큰별)
+
+        # 🔹 이번 막에 공격에 사용 중인 토큰 인덱스(화살표 시작 위치용)
+        self.attack_token_index = None
 
         # 전투 그룹 참조 (흐트러짐 시 동료에게 효과를 전달하는 기능 등에서 사용)
         self.ally_group = None
@@ -156,6 +162,9 @@ class Unit(pygame.sprite.Sprite):
         self.deck_all = []
         self.draw_pile = []
         self.hand = []
+
+        # 이번 막 동안 이 유닛이 사용한 책장 수 (감정 5단계 추가 드로우 계산용)
+        self.pages_used_this_scene = 0
 
         # 적 AI용: 이번 막에 사용할 예정인 책장과 타깃
         self.planned_page = None
@@ -217,6 +226,28 @@ class Unit(pygame.sprite.Sprite):
     # 속도 굴리기
     # =============================
     def roll_speed(self):
+        """이번 막에서 이 유닛의 속도 주사위를 모두 굴린다.
+
+        - self.speed_dice_count 개수만큼 speed_values 리스트에 저장
+        - current_speed : 공격에 사용하는 '메인' 속도 (가장 높은 값)
+        - defense_speed : 공격을 받을 때 기준이 되는 속도 (가장 낮은 값)
+        """
+        # speed_values 초기화 보장
+        if getattr(self, "speed_values", None) is None:
+            self.speed_values = []
+
+        # 이미 굴려진 상태면 다시 굴리지 않는다.
+        if self.current_speed is not None:
+            return
+
+        # 행동 불가 / 사망 / 도주 상태면 속도 0 취급
+        if not self.can_act or self.is_dead or self.is_escaped:
+            self.current_speed = None
+            self.defense_speed = None
+            self.speed_values = []
+            return
+
+        # 가속 / 속도저하 상태이상 반영
         speed_bonus = 0
         for st in self.status_effects:
             if st.type == StatusType.HASTE:
@@ -224,20 +255,28 @@ class Unit(pygame.sprite.Sprite):
             if st.type == StatusType.BIND:
                 speed_bonus -= st.stacks
 
+        # 실제 주사위 굴리기
+        self.speed_values = []
+        dice_count = max(1, int(getattr(self, "speed_dice_count", 1)))
+        for _ in range(dice_count):
+            base = random.randint(self.speed_min, self.speed_max)
+            val = max(1, base + speed_bonus)
+            self.speed_values.append(val)
 
-        if self.current_speed is not None:
-            return
-
-        if not self.can_act or self.is_dead or self.is_escaped:
+        if self.speed_values:
+            # 🔹 공격용 메인 토큰 속도 (가장 높은 속도)
+            self.current_speed = max(self.speed_values)
+            # 🔹 방어용 토큰 속도 (가장 낮은 속도)
+            self.defense_speed = min(self.speed_values)
+        else:
             self.current_speed = None
-            return
-
-        base = random.randint(self.speed_min, self.speed_max)
-        self.current_speed = max(1, base + speed_bonus)
+            self.defense_speed = None
 
     def reset_speed_for_new_turn(self):
         """새 막 시작 시 속도 주사위를 다시 굴릴 수 있도록 초기화."""
         self.current_speed = None
+        self.defense_speed = None
+        self.speed_values = []
 
     # =============================
     # 상태이상 리스트
@@ -306,19 +345,29 @@ class Unit(pygame.sprite.Sprite):
     def draw_cards(self, count: int):
         """
         덱에서 count장 만큼 뽑아 손패에 넣는다.
-        draw_pile이 부족하면 가능한 만큼만 뽑는다.
-        (지금은 버림더미 개념은 없고, 단순히 남은 덱에서만 뽑는 구조)
+
+        - draw_pile이 비면 deck_all을 기준으로 다시 리필한다.
+          (보유하고 있던 책장을 모두 소모하면 같은 구성을 다시 한 번 쓰는 느낌)
+        - draw_pile과 deck_all이 모두 비어 있으면 더 이상 뽑지 않는다.
         """
         import random
 
         for _ in range(count):
+            # 남은 덱이 없으면 한 번 리필 시도
+            if not self.draw_pile:
+                if self.deck_all:
+                    # 원래 가지고 있던 책장 구성으로 다시 채움
+                    self.draw_pile = list(self.deck_all)
+                else:
+                    # 애초에 덱이 없다면 더 이상 뽑을 수 없음
+                    break
+
             if not self.draw_pile:
                 break
+
             page = random.choice(self.draw_pile)
             self.draw_pile.remove(page)
             self.hand.append(page)
-
-
 
     # =============================
     # 데미지 처리
@@ -544,34 +593,69 @@ class Unit(pygame.sprite.Sprite):
     # =============================
     # UI 관련
     # =============================
-    def draw_speed_token(self, surface, font):
-        cx = self.rect.centerx
-        cy = self.rect.top - 40
-
+    # =============================
+    # UI 관련
+    # =============================
+    def get_speed_token_centers(self):
+        """이 유닛의 속도 토큰(코인) 중심 좌표들을 반환한다."""
+        n = max(1, int(getattr(self, "speed_dice_count", 1)))
         radius = 28
-        hex_points = []
-        for i in range(6):
-            ang = math.radians(60 * i - 30)
-            x = cx + radius * math.cos(ang)
-            y = cy + radius * math.sin(ang)
-            hex_points.append((x, y))
+        centers = []
+        # 가운데 기준으로 좌우로 배치
+        for i in range(n):
+            offset = (i - (n - 1) / 2.0) * (radius * 2 + 8)
+            cx = self.rect.centerx + offset
+            cy = self.rect.top - 40
+            centers.append((cx, cy))
+        return centers
 
-        pygame.draw.polygon(surface, TOKEN_COLOR, hex_points)
-        pygame.draw.polygon(surface, TOKEN_BORDER, hex_points, 3)
+    def draw_speed_token(self, surface, font):
+        """속도 토큰(여러 개일 수 있음)을 그린다."""
+        centers = self.get_speed_token_centers()
+        radius = 28
 
+        # 표시 텍스트를 위해 미리 상태 플래그 확인
         if self.is_dead:
-            text = "사망"
+            base_state_text = "사망"
         elif self.is_escaped:
-            text = "도주"
+            base_state_text = "도주"
         elif self.is_staggered:
-            text = "흐트러짐!"
-        elif self.current_speed is None:
-            text = f"{self.speed_min}-{self.speed_max}"
+            base_state_text = "흐트러짐!"
         else:
-            text = str(self.current_speed)
+            base_state_text = None
 
-        surf = font.render(text, True, BLACK)
-        surface.blit(surf, surf.get_rect(center=(cx, cy)))
+        # 아직 속도를 안 굴렸으면 범위만 표시
+        if base_state_text is None:
+            if not getattr(self, "speed_values", None):
+                base_text = f"{self.speed_min}-{self.speed_max}"
+                texts = [base_text for _ in centers]
+            else:
+                # 굴려진 경우 각 토큰마다 실제 속도 표시
+                texts = []
+                for i in range(len(centers)):
+                    if i < len(self.speed_values):
+                        texts.append(str(self.speed_values[i]))
+                    else:
+                        texts.append(f"{self.speed_min}-{self.speed_max}")
+        else:
+            # 사망/도주/흐트러짐이면 모든 토큰에 같은 텍스트
+            texts = [base_state_text for _ in centers]
+
+        # 실제 그리기
+        for idx, (cx, cy) in enumerate(centers):
+            hex_points = []
+            for k in range(6):
+                ang = math.radians(60 * k - 30)
+                x = cx + radius * math.cos(ang)
+                y = cy + radius * math.sin(ang)
+                hex_points.append((x, y))
+
+            pygame.draw.polygon(surface, TOKEN_COLOR, hex_points)
+            pygame.draw.polygon(surface, TOKEN_BORDER, hex_points, 3)
+
+            token_text = texts[idx]
+            surf = font.render(token_text, True, (0, 0, 0))
+            surface.blit(surf, surf.get_rect(center=(cx, cy)))
 
     def draw_hp_sp_bar(self, surface):
         bar_width = 80
