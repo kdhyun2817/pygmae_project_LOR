@@ -977,7 +977,7 @@ def run_battle(screen, stage_code):
                         for page, rect in card_infos:
                             if rect.collidepoint(mouse_pos):
                                 clicked_page = page
-                                brea
+                                break
 
                         if clicked_page is not None:
                             # 코스트 체크: 현재 빛보다 높으면 선택 불가
