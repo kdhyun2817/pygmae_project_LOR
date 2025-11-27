@@ -1043,46 +1043,41 @@ def run_battle(screen, stage_code):
         # ===== 그리기 시작 =====
         screen.fill((30, 30, 40))
 
-        # 상단 텍스트 / 감정 UI는 기존처럼 ...
-        ...
+        # 상단 정보 텍스트
+        info = font.render(
+            f"스테이지: {stage_code} / 막: {scene_index} ",
+            True, WHITE
+        )
 
-        # 유닛들 그리기
+        # 1) 유닛들 먼저 그리기
         for u in all_units:
             u.draw(screen, font)
 
-        # 적의 계획 화살표 (빨간색, 1번키로 토글)
+        # 2) 적/아군 계획 화살표
         if show_enemy_arrows:
             draw_planned_arrows(screen, enemy_group, (255, 80, 80))
-
-        # 아군의 계획 화살표 (파란색 혹은 하늘색, 항상 표시)
         draw_planned_arrows(screen, ally_group, (80, 160, 255))
 
-        # 카드 드래그 중이면: 선택된 유닛 토큰 → 마우스 포인터로 파란 화살표
+        # 3) 카드 드래그 중이면 드래그 화살표
         if is_dragging_card and selected_unit is not None and selected_card is not None:
             start = (selected_unit.rect.centerx, selected_unit.rect.top - 40)
             draw_drag_arrow(screen, start, mouse_pos, (80, 160, 255))
 
-        # 오른쪽 정보 패널
+        # 4) 상단 정보 텍스트
+        screen.blit(info, (200, 20))
+
+        # 5) 감정 UI
+        draw_emotion_ui(screen, font, player_emotion, enemy_emotion)
+
+        # 6) 오른쪽 정보 패널
         draw_unit_info_panel(screen, font, hovered_unit)
 
-        # 중앙 아래 카드 UI
+        # 7) 중앙 아래 카드 UI
         hand_owner = get_hand_owner(selected_unit, hovered_speed_unit)
         draw_hand_cards(screen, font, hand_owner, selected_unit, mouse_pos)
 
+        # ✅ 마지막에 한 번만 flip
         pygame.display.flip()
-
-        # 상단 정보 텍스트
-        info = font.render(
-            f"스테이지: {stage_code} / 막: {scene_index} / SPACE: 속도 / A: 적 참격 / C: 합 테스트 / N: 다음 막 / ESC: 전투 종료",
-            True, WHITE
-        )
-        screen.blit(info, (20, 20))
-
-        # ✅ 감정 UI 그리기
-        draw_emotion_ui(screen, font, player_emotion, enemy_emotion)
-
-        # 마우스 올린 유닛 정보 패널
-        draw_unit_info_panel(screen, font, hovered_unit)
 
     return result
 
