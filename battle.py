@@ -914,6 +914,198 @@ def resolve_clash(dice_a: Dice, dice_b: Dice):
 
     return winner, va, vb
 
+def is_unit_alive_and_present(u):
+    """데미지/행동 처리 가능한 '대상'인지 확인 (죽거나 도주했으면 False)."""
+    if u is None:
+        return False
+    return (not u.is_dead) and (not u.is_escaped)
+
+
+def can_unit_roll_dice(u):
+    """
+    이 유닛이 지금 '자기 주사위'를 굴릴 수 있는지 확인.
+    흐트러짐/행동불가이면 False.
+    """
+    if not is_unit_alive_and_present(u):
+        return False
+    if getattr(u, "is_staggered", False):
+        return False
+    if getattr(u, "can_act", True) is False:
+        return False
+    return True
+
+
+def build_dice_list_for_page(page: CombatPage, owner):
+    """
+    CombatPage의 dice_list를 실제 Dice 객체 리스트로 변환.
+    (EffectSpec은 지금은 무시)
+    """
+    dice_list = []
+    for spec in page.dice_list:
+        d = Dice(
+            owner=owner,
+            kind=spec.kind,
+            min_value=spec.min_value,
+            max_value=spec.max_value,
+            damage_type=spec.damage_type,
+        )
+        dice_list.append(d)
+    return dice_list
+
+
+def resolve_one_sided_attack(dice: Dice, attacker, defender):
+    """
+    일방 공격 처리.
+    - ATTACK 주사위만 피해를 줌.
+    - DEFENSE / EVADE 주사위는 아무 역할 X (그냥 소모).
+    """
+    if not can_unit_roll_dice(attacker):
+        return
+    if not is_unit_alive_and_present(defender):
+        return
+
+    val = dice.roll()
+
+    # 공격 주사위만 실제 피해
+    if dice.kind == DiceKind.ATTACK:
+        dmg_type = dice.damage_type or DamageType.SLASH
+        defender.take_damage(val, dmg_type)
+        # print(f"[일방공격] {attacker} → {defender}, 값={val}")
+    else:
+        # 방어/회피 주사위는 일방공격에서 아무 효과 없음
+        pass
+
+def resolve_clash_between_units(unit_a, unit_b):
+    """
+    unit_a ↔ unit_b 가 서로를 노리는 합공 1쌍에 대한 전체 처리.
+    - 각자의 planned_page를 사용.
+    - 코스트(빛)를 먼저 지불.
+    - 주사위를 인덱스 순서대로 1:1로 합 처리.
+    - 더 많은 주사위를 가진 쪽의 남은 주사위는 일방공격.
+    """
+    if not is_unit_alive_and_present(unit_a) or not is_unit_alive_and_present(unit_b):
+        return
+
+    page_a = getattr(unit_a, "planned_page", None)
+    page_b = getattr(unit_b, "planned_page", None)
+
+    if page_a is None or page_b is None:
+        return
+
+    # 코스트 지불 실패 시 그 쪽 행동은 스킵
+    if not unit_a.spend_light(page_a.cost):
+        print(f"[빛 부족] {page_a.name}")
+        page_a = None
+    if not unit_b.spend_light(page_b.cost):
+        print(f"[빛 부족] {page_b.name}")
+        page_b = None
+
+    dice_a = build_dice_list_for_page(page_a, unit_a) if page_a else []
+    dice_b = build_dice_list_for_page(page_b, unit_b) if page_b else []
+
+    len_a = len(dice_a)
+    len_b = len(dice_b)
+    max_len = max(len_a, len_b)
+
+    for i in range(max_len):
+        d_a = dice_a[i] if i < len_a else None
+        d_b = dice_b[i] if i < len_b else None
+
+        # 둘 다 더 이상 유효하지 않으면 종료
+        if (not is_unit_alive_and_present(unit_a)) and (not is_unit_alive_and_present(unit_b)):
+            break
+
+        # 현재 시점에서 주사위를 굴릴 수 있는지 체크
+        can_a = d_a is not None and can_unit_roll_dice(unit_a)
+        can_b = d_b is not None and can_unit_roll_dice(unit_b)
+
+        # 둘 다 주사위를 굴릴 수 있음 → 합 처리
+        if can_a and can_b:
+            resolve_clash(d_a, d_b)
+        # A만 굴릴 수 있음 → A 일방 공격
+        elif can_a and (not can_b):
+            resolve_one_sided_attack(d_a, unit_a, unit_b)
+        # B만 굴릴 수 있음 → B 일방 공격
+        elif can_b and (not can_a):
+            resolve_one_sided_attack(d_b, unit_b, unit_a)
+        # 둘 다 못 굴리면 이 인덱스는 그냥 스킵
+
+def resolve_one_sided_sequence(attacker, defender):
+    """
+    공격자 attacker가 defender를 향해 planned_page로 일방 공격하는 전체 처리.
+    - 코스트 지불
+    - 주사위 순서대로 굴리며, ATTACK 주사위만 실제 피해를 준다.
+    """
+    if not is_unit_alive_and_present(attacker):
+        return
+    if not is_unit_alive_and_present(defender):
+        return
+
+    page = getattr(attacker, "planned_page", None)
+    if page is None:
+        return
+
+    if not attacker.spend_light(page.cost):
+        print(f"[빛 부족] {page.name}")
+        return
+
+    dice_list = build_dice_list_for_page(page, attacker)
+
+    for d in dice_list:
+        if not can_unit_roll_dice(attacker):
+            break
+        if not is_unit_alive_and_present(defender):
+            break
+        resolve_one_sided_attack(d, attacker, defender)
+
+def execute_scene_actions(all_units, ally_group, enemy_group):
+    """
+    이번 막에서 모든 planned_page / planned_target을
+    속도 순서대로 처리하고, 막을 종료하는 함수.
+    """
+    # 1) 합공 쌍 찾기
+    mutual_pairs = find_mutual_target_pairs(ally_group, enemy_group)
+    units_in_pairs = set()
+    for a, e in mutual_pairs:
+        units_in_pairs.add(a)
+        units_in_pairs.add(e)
+
+    # 2) 액션 리스트 구성
+    #    ("clash", 속도, 유닛A, 유닛B) 또는 ("one_sided", 속도, 공격자, 피격자)
+    actions = []
+
+    # 합공 액션들
+    for a, e in mutual_pairs:
+        spd_a = getattr(a, "current_speed", 0) or 0
+        spd_e = getattr(e, "current_speed", 0) or 0
+        effective_speed = max(spd_a, spd_e)
+        actions.append(("clash", effective_speed, a, e))
+
+    # 일방 공격 액션들
+    for u in all_units:
+        if u in units_in_pairs:
+            continue
+        page = getattr(u, "planned_page", None)
+        target = getattr(u, "planned_target", None)
+        if page is None or target is None:
+            continue
+        if not is_unit_alive_and_present(u):
+            continue
+
+        spd = getattr(u, "current_speed", 0) or 0
+        actions.append(("one_sided", spd, u, target))
+
+    # 3) 속도 내림차순 정렬 (빠른 순서대로 처리)
+    actions.sort(key=lambda x: x[1], reverse=True)
+
+    # 4) 실제 처리
+    for kind, _, a, b in actions:
+        if kind == "clash":
+            resolve_clash_between_units(a, b)
+        elif kind == "one_sided":
+            resolve_one_sided_sequence(a, b)
+
+
 
 def init_decks_for_units(ally_group, enemy_group):
     """
@@ -1051,15 +1243,33 @@ def run_battle(screen, stage_code):
                     result = "retreat"
 
                 if event.key == pygame.K_SPACE:
-                    # 이번 막에서 아직 속도를 안 굴렸을 때만 동작
+                    # 1) 아직 이번 막의 속도를 안 굴렸다면 → 속도 굴리기 + 적 계획 잡기
                     if not speed_rolled:
                         for u in all_units:
                             u.roll_speed()
 
-                        # ✅ 속도 확정 후에 적들이 자동으로 아군을 타겟팅
+                        # 속도 확정 후에 적들이 자동으로 아군을 타겟팅
                         plan_enemy_actions(enemy_group, ally_group)
 
                         speed_rolled = True
+
+                    # 2) 이미 속도가 굴려진 상태라면 → 실제 전투(합/일방 공격) 실행
+                    else:
+                        execute_scene_actions(all_units, ally_group, enemy_group)
+
+                        # 막 종료 처리 (상태이상, 카드 드로우 등)
+                        end_scene(all_units)
+
+                        # 다음 막으로
+                        scene_index += 1
+                        scene_started = False  # 다음 루프에서 start_scene 이 호출됨
+
+                        # 유저 선택 상태 초기화
+                        selected_unit = None
+                        selected_card = None
+                        is_dragging_card = False
+
+
 
                 if event.key == pygame.K_a:
                     # 테스트용: 적 전체에게 참격 10

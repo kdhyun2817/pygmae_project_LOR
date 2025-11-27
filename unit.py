@@ -163,9 +163,7 @@ class Unit(pygame.sprite.Sprite):
         self.max_light = 3
         self.light = 3
 
-        def reset_speed_for_new_turn(self):
-            """새 막 시작 시 속도 주사위를 다시 굴릴 수 있도록 초기화."""
-            self.current_speed = None
+
 
         # --- 내성 (HP/SP 분리) ---
         default_resist = {
@@ -222,6 +220,10 @@ class Unit(pygame.sprite.Sprite):
 
         base = random.randint(self.speed_min, self.speed_max)
         self.current_speed = max(1, base + speed_bonus)
+
+    def reset_speed_for_new_turn(self):
+        """새 막 시작 시 속도 주사위를 다시 굴릴 수 있도록 초기화."""
+        self.current_speed = None
 
     # =============================
     # 상태이상 리스트
