@@ -50,6 +50,18 @@ def end_scene(all_units):
         if hasattr(u, "draw_cards"):
             u.draw_cards(1)
 
+def reset_plans(all_units):
+    """새 막 시작 시 모든 유닛의 planned_page / planned_target / initial_target 리셋"""
+    for u in all_units:
+        if hasattr(u, "planned_page"):
+            u.planned_page = None
+        if hasattr(u, "planned_target"):
+            u.planned_target = None
+        # ✅ '처음에 공격하려던 애' 기록도 막 시작할 때 리셋
+        if hasattr(u, "initial_target"):
+            u.initial_target = None
+
+
 
 # ----------------------------
 # Dice 클래스
@@ -315,6 +327,69 @@ def plan_enemy_actions(enemy_group, ally_group):
         e.planned_page = page
         e.planned_target = target
 
+        e.initial_target = target
+
+def update_counter_target_on_attack(attacker, defender):
+    """
+    공격자(attacker)가 defender를 타겟팅했을 때,
+    defender가 누구를 노릴지(반타겟)를 갱신하는 함수.
+
+    기본 규칙:
+    1) 공격자의 속도가 defender보다 느리거나 같으면 타겟 변경 없음.
+    2) 공격자의 속도가 defender보다 빠를 때만 타겟 변경을 고려.
+    3) 기존 타겟이 없거나, 죽었거나, 같은 팀이면 공격자로 변경.
+    4) 기존 타겟이 살아 있고 적 팀일 때는
+       공격자 속도 > 기존 타겟 속도일 때만 갈아탄다.
+
+    + 추가 규칙(너가 말한 부분):
+    A) defender.initial_target 이 이번 공격자라면
+       속도와 상관없이 무조건 그 공격자로 타겟을 되돌린다.
+    """
+    if attacker is None or defender is None:
+        return
+    if attacker.is_dead or attacker.is_escaped or defender.is_dead or defender.is_escaped:
+        return
+    # 같은 팀은 반타겟팅 안 함
+    if attacker.is_ally == defender.is_ally:
+        return
+
+    atk_spd = getattr(attacker, "current_speed", None)
+    def_spd = getattr(defender, "current_speed", None)
+
+    # ✅ [추가 규칙 A] 처음에 노리던 애가 나를 때리면 무조건 그 애로 되돌리기
+    initial = getattr(defender, "initial_target", None)
+    if initial is attacker:
+        defender.planned_target = attacker
+        return
+
+    # 여기부터는 기존 “속도 기반 역타겟팅” 규칙
+
+    if atk_spd is None or def_spd is None:
+        return
+
+    # 1) 공격자가 나보다 느리거나 같으면 → 타겟 유지
+    if atk_spd <= def_spd:
+        return
+
+    current = getattr(defender, "planned_target", None)
+
+    # 3) 기존 타겟이 없거나, 죽었거나, 같은 팀이면 → 공격자로 변경
+    if current is None or current.is_dead or current.is_escaped or current.is_ally == defender.is_ally:
+        defender.planned_target = attacker
+        return
+
+    cur_spd = getattr(current, "current_speed", None)
+
+    if cur_spd is None:
+        defender.planned_target = attacker
+        return
+
+    # 4) 공격자가 기존 타겟보다 빠른 경우에만 갈아탄다
+    if atk_spd > cur_spd:
+        defender.planned_target = attacker
+    # 아니면 그대로 유지
+
+
 
 
 def draw_unit_info_panel(surface, font, hovered_unit):
@@ -529,11 +604,18 @@ def draw_hand_cards(surface, font, owner, selected_unit, mouse_pos):
 
 
 
-def draw_planned_arrows(surface, units, color):
+def draw_planned_arrows(surface, units, color, exclude_units=None):
     """
     planned_page/planned_target 가 설정된 유닛들의 토큰 코인 → 타깃 코인 방향으로 화살표를 그린다.
+    exclude_units에 포함된 유닛은 시작점으로 그리지 않는다.
     """
+    if exclude_units is None:
+        exclude_units = set()
+
     for u in units:
+        if u in exclude_units:
+            continue
+
         page = getattr(u, "planned_page", None)
         target = getattr(u, "planned_target", None)
         if page is None or target is None:
@@ -546,6 +628,38 @@ def draw_planned_arrows(surface, units, color):
 
         draw_drag_arrow(surface, start, end, color)
 
+
+def find_mutual_target_pairs(ally_group, enemy_group):
+    """
+    아군 A의 planned_target이 적 E이고,
+    동시에 적 E의 planned_target이 A인 쌍들을 모두 찾는다.
+    """
+    pairs = []
+    for a in ally_group:
+        target = getattr(a, "planned_target", None)
+        if target is None or target.is_ally:
+            continue
+        e = target
+        if getattr(e, "planned_target", None) is a:
+            pairs.append((a, e))
+    return pairs
+
+
+def draw_mutual_arrows(surface, pairs, color):
+    """
+    합공격 상태인 쌍들(A, E)에 대해
+    양쪽 방향으로 노란 화살표를 그린다.
+    """
+    for a, e in pairs:
+        if a.is_dead or a.is_escaped or e.is_dead or e.is_escaped:
+            continue
+
+        start_a = (a.rect.centerx, a.rect.top - 40)
+        start_e = (e.rect.centerx, e.rect.top - 40)
+
+        # A → E, E → A 두 방향 모두 그림
+        draw_drag_arrow(surface, start_a, start_e, color)
+        draw_drag_arrow(surface, start_e, start_a, color)
 
 
 def draw_drag_arrow(surface, start_pos, end_pos, color=(80, 160, 255)):
@@ -782,8 +896,11 @@ def run_battle(screen, stage_code):
 
     scene_index = 1  # 현재 막 번호
     scene_started = False  # 막이 시작됐는지 여부
+    speed_rolled = False  # ✅ 이번 막에서 속도를 이미 굴렸는지 여부
 
     show_enemy_arrows = False  # 1번 키로 토글하는 표시 여부
+    show_ally_arrows = True  # ✅ 2번 키: 아군(파란) 화살표 표시 여부
+    show_mutual_arrows = True  # ✅ 3번 키: 합공격(노란) 화살표 표시 여부
 
     # ✅ 유저 입력/선택 상태
     selected_unit = None  # 현재 선택된 아군 유닛
@@ -849,8 +966,9 @@ def run_battle(screen, stage_code):
         if not scene_started:
             start_scene(scene_index, all_units)
 
-            # ✅ 새 막 시작 시 적 행동 계획 세우기
-            plan_enemy_actions(enemy_group, ally_group)
+            # ✅ 이번 막 시작 시, 이전 막의 공격 계획 초기화 & 속도 미정 상태로
+            reset_plans(all_units)
+            speed_rolled = False
 
             scene_started = True
 
@@ -866,9 +984,15 @@ def run_battle(screen, stage_code):
                     result = "retreat"
 
                 if event.key == pygame.K_SPACE:
-                    # 한 번만 속도 정해지게 Unit.roll_speed에 로직 넣어둔 상태
-                    for u in all_units:
-                        u.roll_speed()
+                    # 이번 막에서 아직 속도를 안 굴렸을 때만 동작
+                    if not speed_rolled:
+                        for u in all_units:
+                            u.roll_speed()
+
+                        # ✅ 속도 확정 후에 적들이 자동으로 아군을 타겟팅
+                        plan_enemy_actions(enemy_group, ally_group)
+
+                        speed_rolled = True
 
                 if event.key == pygame.K_a:
                     # 테스트용: 적 전체에게 참격 10
@@ -909,8 +1033,21 @@ def run_battle(screen, stage_code):
                 if event.key == pygame.K_1:
                     show_enemy_arrows = not show_enemy_arrows
 
+                # 2번 키: 아군(파란) 화살표 표시 토글
+                if event.key == pygame.K_2:
+                    show_ally_arrows = not show_ally_arrows
+
+                # 3번 키: 합공격(노란) 화살표 표시 토글
+                if event.key == pygame.K_3:
+                    show_mutual_arrows = not show_mutual_arrows
+
+
             if event.type == pygame.MOUSEBUTTONDOWN:
                 mouse_pos = event.pos
+
+                # ✅ 속도 굴리기 전(0막 느낌)에는 토큰/카드 관련 상호작용 금지
+                if not speed_rolled:
+                    continue
 
                 # ---- 우클릭 공통: 드래그 취소 우선 ----
                 if event.button == 3:
@@ -957,10 +1094,14 @@ def run_battle(screen, stage_code):
                             if selected_card in selected_unit.hand:
                                 selected_unit.hand.remove(selected_card)
 
+                            # ✅ 공격자가 selected_unit, 피격자가 clicked_enemy
+                            update_counter_target_on_attack(attacker=selected_unit, defender=clicked_enemy)
+
                             # 선택 상태 종료
                             is_dragging_card = False
                             selected_card = None
                             selected_unit = None
+
                         # 적 토큰이 아니면: 그대로 드래그 유지
                         continue
 
@@ -1053,10 +1194,23 @@ def run_battle(screen, stage_code):
         for u in all_units:
             u.draw(screen, font)
 
-        # 2) 적/아군 계획 화살표
+        # 2) 적/아군 계획 화살표 + 합공격(양방향) 표시
+
+        # 합공격(서로 타겟팅) 쌍 찾기
+        mutual_pairs = find_mutual_target_pairs(ally_group, enemy_group)
+        mutual_allies = {a for (a, e) in mutual_pairs}
+        mutual_enemies = {e for (a, e) in mutual_pairs}
+
+        # 합공격 상태: 노란색 양방향 화살표 (3번 키)
+        if show_mutual_arrows:
+            draw_mutual_arrows(screen, mutual_pairs, (255, 230, 80))
+
+        # 그 외 일반 타겟팅 화살표
         if show_enemy_arrows:
-            draw_planned_arrows(screen, enemy_group, (255, 80, 80))
-        draw_planned_arrows(screen, ally_group, (80, 160, 255))
+            draw_planned_arrows(screen, enemy_group, (255, 80, 80), exclude_units=mutual_enemies)
+
+        if show_ally_arrows:
+            draw_planned_arrows(screen, ally_group, (80, 160, 255), exclude_units=mutual_allies)
 
         # 3) 카드 드래그 중이면 드래그 화살표
         if is_dragging_card and selected_unit is not None and selected_card is not None:
@@ -1073,8 +1227,9 @@ def run_battle(screen, stage_code):
         draw_unit_info_panel(screen, font, hovered_unit)
 
         # 7) 중앙 아래 카드 UI
-        hand_owner = get_hand_owner(selected_unit, hovered_speed_unit)
-        draw_hand_cards(screen, font, hand_owner, selected_unit, mouse_pos)
+        if speed_rolled:
+            hand_owner = get_hand_owner(selected_unit, hovered_speed_unit)
+            draw_hand_cards(screen, font, hand_owner, selected_unit, mouse_pos)
 
         # ✅ 마지막에 한 번만 flip
         pygame.display.flip()
