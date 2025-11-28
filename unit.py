@@ -141,6 +141,9 @@ class Unit(pygame.sprite.Sprite):
         self.is_staggered = False
         self.can_act = True
 
+        # 흐트러짐 회복까지 남은 막 수 (0이면 바로 회복 대상 아님)
+        self.stagger_recover_scenes = 0
+
         # 🔹 속도 관련
         self.current_speed = None
         self.defense_speed = None
@@ -587,9 +590,17 @@ class Unit(pygame.sprite.Sprite):
                 return
 
     def on_staggered(self):
+        # 이미 흐트러져 있으면 다시 처리할 필요 없음
+        if self.is_staggered:
+            return
+
         self.is_staggered = True
         self.can_act = False
         self.current_speed = None
+
+        # 🔹 다음 막 하나는 통째로 쉰 뒤, 그 다음 막에서 회복하도록
+        #    (현재 막 + 다음 막 = 총 2막 동안 행동 불가)
+        self.stagger_recover_scenes = 2
 
         for k in self.hp_resist_cur:
             self.hp_resist_cur[k] = ResistLevel.FATAL
@@ -611,18 +622,24 @@ class Unit(pygame.sprite.Sprite):
                         ally.add_status(StatusType.BURN, burn_amount)
 
     def recover_stagger_next_scene(self):
+        """흐트러짐이 끝났을 때 실제로 회복시키는 함수."""
         if self.is_dead or self.is_escaped:
             return
+
+        # 진짜 흐트러져 있을 때만 의미 있음
+        if not self.is_staggered:
+            return
+
         self.is_staggered = False
         self.can_act = True
         self.sp = self.max_sp
+        self.stagger_recover_scenes = 0
 
         self.hp_resist_cur = dict(self.hp_resist_base)
         self.sp_resist_cur = dict(self.sp_resist_base)
 
-    # =============================
-    # UI 관련
-    # =============================
+
+
     # =============================
     # UI 관련
     # =============================

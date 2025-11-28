@@ -60,9 +60,16 @@ def start_scene(scene_index, all_units):
         if hasattr(u, "gain_light"):
             u.gain_light(1)
 
-        # 이전 막에서 흐트러졌던 유닛 복구
-        if hasattr(u, "recover_stagger_next_scene"):
-            u.recover_stagger_next_scene()
+        # 🔹 흐트러짐 상태인 유닛은 '막 카운트'를 깎고, 0이 되면 회복
+        if getattr(u, "is_staggered", False):
+            # 처음 on_staggered()에서 2로 설정했으니,
+            #   - SP 0 된 현재 막: 그냥 흐트러짐
+            #   - 다음 막 시작: 2 -> 1 (여전히 흐트러짐, 행동 불가)
+            #   - 그 다음 막 시작: 1 -> 0 → 여기서 회복
+            if getattr(u, "stagger_recover_scenes", 0) > 0:
+                u.stagger_recover_scenes -= 1
+                if u.stagger_recover_scenes <= 0 and hasattr(u, "recover_stagger_next_scene"):
+                    u.recover_stagger_next_scene()
 
         # 속도 주사위 리셋 (다음에 SPACE로 다시 굴릴 수 있게)
         if hasattr(u, "reset_speed_for_new_turn"):
@@ -448,7 +455,7 @@ def create_ally_units():
             DamageType.PIERCE: ResistLevel.NORMAL,
             DamageType.BLUNT: ResistLevel.NORMAL,
         }
-        u = Unit(x, y, 2, 5, True, None, 40, 20, hp_res, sp_res)
+        u = Unit(x, y, 2, 5, True, None, 1000, 1, hp_res, sp_res)
 
         u.speed_dice_count = 2
 
