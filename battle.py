@@ -523,58 +523,64 @@ def plan_enemy_actions(enemy_group, ally_group):
 
 def update_counter_target_on_attack(attacker, defender, atk_speed=None):
     """
-    ⚠️ 현재 버전에서는 자동 합공(반타겟) 로직을 일시적으로 비활성화한다.
-    - 기존에는 공격자가 나보다 빠르면 타깃을 공격자로 바꾸는 로직이 있었는데,
-      토큰/속도/여러 번 계획과 얽히면서 예측하기 어려운 버그를 계속 만들어내고 있었다.
-    - 추후 토큰 단위 행동/합공 시스템을 완전히 재설계할 때,
-      그에 맞는 반타겟 규칙을 함께 다시 구현하는 것이 안전하다.
+    공격자(attacker)의 특정 속도 토큰이 defender를 타겟팅했을 때,
+    defender가 누구를 노릴지(반타겟)를 갱신하는 함수.
+
+    🔹 규칙 (LoR식 간단 버전, 토큰 속도 반영):
+
+      - 비교에 쓰는 속도:
+        * 공격자: 이번에 사용한 '공격 토큰 속도' (atk_speed 인자로 넘어옴)
+        * 수비자: defender.defense_speed  (가장 느린 속도 주사위)
+
+      - [우선 규칙] 처음에 노리던 애가 나를 때리면 (initial_target == attacker)
+        → 속도와 무관하게 그 공격자로 다시 타겟을 되돌린다.
+
+      - [규칙 1] 공격자가 나보다 느리거나 같으면 (atk_speed <= defense_speed)
+        → 타겟 변경 없이 기존 planned_target 유지 (합 뺏기 실패)
+
+      - [규칙 2] 공격자가 나보다 빠르면 (atk_speed > defense_speed)
+        → defender.planned_target 을 공격자로 변경 (합 뺏기 성공)
     """
-    return
-# 비활성화 전의 기존함수
-# def update_counter_target_on_attack(attacker, defender, atk_speed=None):
-#     """
-#     공격자(attacker)가 defender를 타겟팅했을 때,
-#     defender가 누구를 노릴지(반타겟)를 갱신하는 함수.
-#
-#     🔹토큰 분리 규칙:
-#       - 공격자는 이번에 사용한 '공격 토큰 속도'를 사용
-#       - 피격자는 자신의 defense_speed를 사용
-#     """
-#     if attacker is None or defender is None:
-#         return
-#     if attacker.is_dead or attacker.is_escaped or defender.is_dead or defender.is_escaped:
-#         return
-#
-#     # 같은 팀이면 반타겟팅 안 함
-#     if attacker.is_ally == defender.is_ally:
-#         return
-#
-#     # 공격 속도: 호출 쪽에서 명시적으로 넘겨주면 그것을 사용
-#     if atk_speed is not None:
-#         atk_spd = atk_speed
-#     else:
-#         atk_spd = getattr(attacker, "current_speed", None)
-#
-#     # 방어 시에는 '이번 막에 공격에 사용할 속도' 기준으로 비교
-#     # (여러 속도 토큰 중 가장 빠른 current_speed 사용)
-#     def_spd = getattr(defender, "current_speed", None)
-#
-#     # [규칙 3] 처음에 노리던 애가 나를 때리면 → 속도 상관없이 그 애로 되돌리기
-#     initial = getattr(defender, "initial_target", None)
-#     if initial is attacker:
-#         defender.planned_target = attacker
-#         return
-#
-#     # 속도 정보 없으면 안전하게 무시
-#     if atk_spd is None or def_spd is None:
-#         return
-#
-#     # [규칙 1] 공격자가 나보다 느리거나 같으면 타겟 유지
-#     if atk_spd <= def_spd:
-#         return
-#
-#     # [규칙 2] 공격자가 나보다 빠르면 무조건 그 공격자로 갈아탄다
-#     defender.planned_target = attacker
+    if attacker is None or defender is None:
+        return
+    if attacker.is_dead or attacker.is_escaped or defender.is_dead or defender.is_escaped:
+        return
+
+    # 같은 팀이면 반타겟팅 안 함
+    if attacker.is_ally == defender.is_ally:
+        return
+
+    # defender.initial_target 이 아직 안 잡혀 있으면,
+    # 현재 planned_target을 "원래 노리던 애"로 기록해 둔다.
+    if not hasattr(defender, "initial_target") or defender.initial_target is None:
+        defender.initial_target = getattr(defender, "planned_target", None)
+
+    # 공격 속도: 호출 쪽에서 넘겨준 토큰 속도가 우선
+    if atk_speed is not None:
+        atk_spd = atk_speed
+    else:
+        atk_spd = getattr(attacker, "current_speed", None)
+
+    # 방어 속도: 방어용 속도 주사위(defense_speed)를 사용
+    def_spd = getattr(defender, "defense_speed", None)
+
+    # [우선 규칙] 처음에 노리던 애가 나를 때리면 → 속도 상관없이 되돌리기
+    initial = getattr(defender, "initial_target", None)
+    if initial is attacker:
+        defender.planned_target = attacker
+        return
+
+    # 속도 정보 없으면 안전하게 무시
+    if atk_spd is None or def_spd is None:
+        return
+
+    # [규칙 1] 공격자가 나보다 느리거나 같으면 타겟 유지 (합 뺏기 실패)
+    if atk_spd <= def_spd:
+        return
+
+    # [규칙 2] 공격자가 나보다 빠르면 → 그 공격자로 갈아탄다 (합 뺏기 성공)
+    defender.planned_target = attacker
+
 
 
 def retarget_defender_after_cancel(defender, all_units):
@@ -875,19 +881,24 @@ def draw_hand_cards(surface, font, owner, token_index, selected_unit, mouse_pos)
 
 
 
-def draw_planned_arrows(surface, units, color, exclude_units=None):
+def draw_planned_arrows(surface, units, color, mutual_pairs=None):
     """
     token_plans에 기록된 토큰별 공격 계획을 기준으로
     토큰 코인 → 타깃 코인 방향으로 화살표를 그린다.
-    exclude_units에 포함된 유닛은 시작점으로 그리지 않는다.
+
+    mutual_pairs: find_mutual_target_pairs 로 구해진 (아군, 적) 유닛 쌍 목록.
+      - 이 쌍에 해당하는 (공격 유닛, 타깃 유닛) 조합은
+        노란 합공 화살표로 따로 그리게 되므로,
+        여기서는 파란/빨간 화살표를 중복해서 그리지 않는다.
+      - 같은 유닛의 다른 토큰이 다른 적을 때리는 건 그대로 일방 화살표 유지.
     """
-    if exclude_units is None:
-        exclude_units = set()
+    pair_set = set()
+    if mutual_pairs is not None:
+        for a, e in mutual_pairs:
+            pair_set.add((a, e))
+            pair_set.add((e, a))  # 양방향 모두 제외
 
     for u in units:
-        if u in exclude_units:
-            continue
-
         token_plans = getattr(u, "token_plans", {})
         if not token_plans:
             # 적처럼 여전히 planned_page만 쓰는 경우를 위해서
@@ -895,10 +906,9 @@ def draw_planned_arrows(surface, units, color, exclude_units=None):
             target = getattr(u, "planned_target", None)
             if page is None or target is None:
                 continue
-            token_indices = [getattr(u, "attack_token_index", 0)]
-            token_plans = {token_indices[0]: {"page": page, "target": target}}
+            token_idx = getattr(u, "attack_token_index", 0)
+            token_plans = {token_idx: {"page": page, "target": target}}
 
-        # 유닛 u의 모든 토큰 계획을 순회
         if hasattr(u, "get_speed_token_centers"):
             centers_u = u.get_speed_token_centers()
         else:
@@ -909,6 +919,16 @@ def draw_planned_arrows(surface, units, color, exclude_units=None):
             target = plan.get("target")
             if page is None or target is None:
                 continue
+
+            # 🔹 이 (공격 유닛, 타깃 유닛) 조합이 합공 쌍이면
+            #    → 그 유닛의 "합공에 쓰이는 토큰"만 파란/빨간 화살표를 숨긴다.
+            #      (나머지 토큰은 같은 대상이라도 일방 공격 화살표를 그려야 함)
+            if (u, target) in pair_set:
+                clash_idx = getattr(u, "attack_token_index", None)
+                # attack_token_index 가 설정되어 있고,
+                # 지금 도는 token_idx 가 그 합공 토큰이면 → 파란/빨간 화살표 생략
+                if clash_idx is None or token_idx == clash_idx:
+                    continue
 
             # 시작점: 공격 토큰 코인
             if 0 <= token_idx < len(centers_u):
@@ -932,6 +952,8 @@ def draw_planned_arrows(surface, units, color, exclude_units=None):
 
 
 
+
+
 def find_mutual_target_pairs(ally_group, enemy_group):
     """
     아군 A의 planned_target이 적 E이고,
@@ -948,12 +970,14 @@ def find_mutual_target_pairs(ally_group, enemy_group):
     return pairs
 
 
-def draw_mutual_arrows(surface, ally_group, enemy_group):
+def draw_mutual_arrows(surface, pairs, color):
     """
-    합공 상태(서로를 타깃으로 하는 유닛 쌍)를 찾아,
-    각 유닛의 공격 토큰 코인 ↔ 공격 토큰 코인 방향으로 노란 화살표를 그린다.
+    find_mutual_target_pairs 로 구해진 (아군, 적) 유닛 쌍 목록을 받아서,
+    각 유닛의 '공격 토큰 코인' ↔ '공격 토큰 코인' 방향으로 노란 화살표를 그린다.
+
+    pairs: [(ally_unit, enemy_unit), ...]
+    color: (R, G, B)
     """
-    pairs = find_mutual_target_pairs(ally_group, enemy_group)
     if not pairs:
         return
 
@@ -983,9 +1007,11 @@ def draw_mutual_arrows(surface, ally_group, enemy_group):
         else:
             start_e = (e.rect.centerx, e.rect.top - 40)
 
-        # 서로에게 가는 노란 화살표 두 개
-        draw_drag_arrow(surface, start_a, start_e, (255, 220, 50))
-        draw_drag_arrow(surface, start_e, start_a, (255, 220, 50))
+        # 서로에게 가는 양방향 노란 화살표
+        draw_drag_arrow(surface, start_a, start_e, color)
+        draw_drag_arrow(surface, start_e, start_a, color)
+
+
 
 
 
@@ -1676,22 +1702,25 @@ def run_battle(screen, stage_code):
                         plans = getattr(u, "token_plans", {})
                         plan = plans.pop(clicked_token_idx, None)
 
+                        # 이 토큰이 원래 노리던 defender (적) 저장
+                        defender = None
                         if plan is not None:
+                            defender = plan.get("target")
                             page = plan.get("page")
                             # 손패에서 빼놨던 카드 되돌리기
                             if page is not None:
                                 if not hasattr(u, "hand") or page not in u.hand:
                                     u.hand.append(page)
+                        else:
+                            page = None
 
                         # 예약 빛 되돌리기
                         if hasattr(u, "light_reserved_per_token"):
                             old_cost = u.light_reserved_per_token.pop(clicked_token_idx, 0)
                         else:
                             old_cost = 0
-                            if plan is not None:
-                                p = plan.get("page")
-                                if p is not None:
-                                    old_cost = getattr(p, "cost", 0)
+                            if page is not None:
+                                old_cost = getattr(page, "cost", 0)
 
                         if old_cost:
                             u.light_reserved = max(
@@ -1711,7 +1740,11 @@ def run_battle(screen, stage_code):
                             u.planned_target = None
                             u.attack_token_index = None
 
-                        # (c) 방금 취소한 토큰을 선택 중이었다면 선택도 해제
+                        # 🔹 (c) 방금 공격 취소로 인해 defender 쪽 타겟/합공 재조정
+                        if defender is not None:
+                            retarget_defender_after_cancel(defender, all_units)
+
+                        # (d) 방금 취소한 토큰을 선택 중이었다면 선택도 해제
                         if selected_unit is u and selected_token_index == clicked_token_idx:
                             selected_unit = None
                             selected_token_index = None
@@ -1805,8 +1838,20 @@ def run_battle(screen, stage_code):
 
                             selected_unit.attack_token_index = selected_token_index
 
-                            # (반타겟 자동 변경은 현재 비활성화 상태)
-                            # update_counter_target_on_attack(...)
+                            # 🔹 이번 공격에 사용한 토큰의 속도를 계산
+                            speed_values = getattr(selected_unit, "speed_values", [])
+                            if (selected_token_index is not None and
+                                    0 <= selected_token_index < len(speed_values)):
+                                atk_speed = speed_values[selected_token_index]
+                            else:
+                                atk_speed = getattr(selected_unit, "current_speed", None)
+
+                            # 🔹 합 뺏기 / 합 맞추기 로직 적용
+                            update_counter_target_on_attack(
+                                attacker=selected_unit,
+                                defender=clicked_enemy,
+                                atk_speed=atk_speed,
+                            )
 
                             is_dragging_card = False
                             selected_card = None
@@ -1926,21 +1971,19 @@ def run_battle(screen, stage_code):
 
         # 2) 적/아군 계획 화살표 + 합공격(양방향) 표시
 
-        # 합공격(서로 타겟팅) 쌍 찾기
+        # 합공 쌍 (아군, 적) 유닛 튜플 목록
         mutual_pairs = find_mutual_target_pairs(ally_group, enemy_group)
-        mutual_allies = {a for (a, e) in mutual_pairs}
-        mutual_enemies = {e for (a, e) in mutual_pairs}
 
-        # 합공격 상태: 노란색 양방향 화살표 (3번 키)
+        # 노란 합공 화살표 (3번 키)
         if show_mutual_arrows:
             draw_mutual_arrows(screen, mutual_pairs, (255, 230, 80))
 
-        # 그 외 일반 타겟팅 화살표
+        # 파란/빨간 일방 화살표 (합공에 해당하는 쌍은 빼고 그림)
         if show_enemy_arrows:
-            draw_planned_arrows(screen, enemy_group, (255, 80, 80), exclude_units=mutual_enemies)
+            draw_planned_arrows(screen, enemy_group, (255, 80, 80), mutual_pairs=mutual_pairs)
 
         if show_ally_arrows:
-            draw_planned_arrows(screen, ally_group, (80, 160, 255), exclude_units=mutual_allies)
+            draw_planned_arrows(screen, ally_group, (80, 160, 255), mutual_pairs=mutual_pairs)
 
         # 3) 카드 드래그 중이면 선택한 '속도 토큰'에서 마우스까지 임시 화살표
         if is_dragging_card and selected_unit is not None and selected_card is not None:
