@@ -457,7 +457,7 @@ def create_ally_units():
         }
         u = Unit(x, y, 2, 5, True, None, 1000, 1, hp_res, sp_res)
 
-        u.speed_dice_count = 2
+        u.speed_dice_count = 1
 
         ally_group.add(u)
 
@@ -486,7 +486,7 @@ def create_enemies_from_stage(stage_code):
         )
 
         # 🔹 적도 기본 속도 코인 2개 사용
-        u.speed_dice_count = 2
+        u.speed_dice_count = 1
 
         enemy_group.add(u)
 
@@ -1267,11 +1267,6 @@ def draw_mutual_arrows(surface, pairs, color):
         draw_drag_arrow(surface, start_a, start_e, color)
         draw_drag_arrow(surface, start_e, start_a, color)
 
-
-
-
-
-
 def draw_drag_arrow(surface, start_pos, end_pos, color=(80, 160, 255)):
     """
     시작점 → 끝점으로 포물선 화살표를 그린다.
@@ -1315,6 +1310,76 @@ def draw_drag_arrow(surface, start_pos, end_pos, color=(80, 160, 255)):
 
         pygame.draw.polygon(surface, color, [(x2, y2), left, right])
 
+def draw_focus_step(
+    screen,
+    font,
+    all_units,
+    ally_group,
+    enemy_group,
+    show_enemy_arrows,
+    show_ally_arrows,
+    show_mutual_arrows,
+    dice_owner_a=None,
+    value_a=None,
+    dice_owner_b=None,
+    value_b=None,
+    delay_ms=400,
+):
+    """
+    주사위를 한 번 굴린 직후, 화면을 다시 그려서
+    - 유닛/HP/SP/속도 주사위
+    - 공격/합공 화살표
+    - 주사위 눈(간단히 유닛 위에 표시)
+    를 보여주고 잠깐 멈춘다.
+    """
+    if screen is None or font is None:
+        return
+
+    # 배경
+    screen.fill((30, 30, 40))
+
+    # 1) 유닛 + HP/SP/속도 토큰
+    for u in all_units:
+        u.draw(screen, font)
+
+    # 2) 화살표
+    mutual_pairs = find_mutual_target_pairs(ally_group, enemy_group)
+
+    if show_mutual_arrows:
+        draw_mutual_arrows(screen, mutual_pairs, (255, 230, 80))
+
+    if show_enemy_arrows:
+        draw_planned_arrows(
+            screen, enemy_group, (255, 120, 120),
+            mutual_pairs=mutual_pairs,
+        )
+
+    if show_ally_arrows:
+        draw_planned_arrows(
+            screen, ally_group, (80, 160, 255),
+            mutual_pairs=mutual_pairs,
+        )
+
+    # 3) 이번에 굴린 주사위 값 간단 표시 (유닛 머리 위)
+    if dice_owner_a is not None and value_a is not None:
+        text_surf = font.render(str(value_a), True, (255, 255, 255))
+        rect = text_surf.get_rect()
+        rect.centerx = dice_owner_a.rect.centerx
+        rect.bottom = dice_owner_a.rect.top - 50
+        screen.blit(text_surf, rect)
+
+    if dice_owner_b is not None and value_b is not None:
+        text_surf = font.render(str(value_b), True, (255, 255, 255))
+        rect = text_surf.get_rect()
+        rect.centerx = dice_owner_b.rect.centerx
+        rect.bottom = dice_owner_b.rect.top - 50
+        screen.blit(text_surf, rect)
+
+    # 4) 화면 갱신 + 잠깐 딜레이
+    pygame.display.flip()
+    pygame.event.pump()      # 윈도우 응답 멈추지 않게
+    pygame.time.delay(delay_ms)
+
 
 
 # ----------------------------
@@ -1326,11 +1391,15 @@ def resolve_clash(dice_a, dice_b):
     dice_b: B 유닛의 주사위
 
     합공 주사위 1회 판정 (감정코인 + 상태이상 트리거 포함)
+    🔹 주목 연출을 위해 (winner, va, vb)를 리턴한다.
+       - winner: "a" / "b" / "tie"
+       - va, vb: 각각 A/B 주사위의 눈
     """
 
     ua, ub = dice_a.owner, dice_b.owner
     ka, kb = dice_a.kind, dice_b.kind
 
+    # 주사위 굴리기
     va = dice_a.roll()
     vb = dice_b.roll()
 
@@ -1351,7 +1420,7 @@ def resolve_clash(dice_a, dice_b):
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_LOSS)
             apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_HIT)
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_BE_HIT)
-            return "a"
+            return "a", va, vb
 
         elif vb > va:
             ua.take_damage(vb, dice_b.damage_type)
@@ -1362,17 +1431,15 @@ def resolve_clash(dice_a, dice_b):
             apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_LOSS)
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_HIT)
             apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_BE_HIT)
-            return "b"
-
+            return "b", va, vb
         else:
-            return "tie"
+            return "tie", va, vb
 
     # ================================================================
     # 2) ATTACK vs DEFENSE
     # ================================================================
     if ka == DiceKind.ATTACK and kb == DiceKind.DEFENSE:
         if va > vb:
-            # 공격이 방어를 뚫고 직접 피해
             ub.take_damage(va - vb, dice_a.damage_type)
             is_kill = ub.is_dead
             award_emotion_for_hit(ua, ub, va - vb, is_kill)
@@ -1381,13 +1448,14 @@ def resolve_clash(dice_a, dice_b):
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_LOSS)
             apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_HIT)
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_BE_HIT)
-            return "a"
-        else:
-            # 방어 승
+            return "a", va, vb
+        elif vb > va:
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_WIN)
             apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_LOSS)
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_DEFEND)
-            return "b"
+            return "b", va, vb
+        else:
+            return "tie", va, vb
 
     # ================================================================
     # 3) ATTACK vs EVADE
@@ -1403,13 +1471,18 @@ def resolve_clash(dice_a, dice_b):
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_LOSS)
             apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_HIT)
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_BE_HIT)
-            return "a"
+            return "a", va, vb
         else:
-            # 회피 성공 → 보통 피해 없음
+            # 회피 승리 → 피해 없음 + 회피 주사위 값만큼 SP 회복
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_WIN)
             apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_LOSS)
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_DODGE)
-            return "b"
+
+            # 회피 주사위 눈만큼 정신력 회복
+            if hasattr(ub, "recover_sp"):
+                ub.recover_sp(vb)
+
+            return "b", va, vb
 
     # ================================================================
     # 4) DEFENSE vs DEFENSE
@@ -1420,49 +1493,61 @@ def resolve_clash(dice_a, dice_b):
             apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_WIN)
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_LOSS)
             apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_DEFEND)
-            return "a"
+            return "a", va, vb
         elif vb > va:
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_WIN)
             apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_LOSS)
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_DEFEND)
-            return "b"
+            return "b", va, vb
         else:
-            return "tie"
+            return "tie", va, vb
 
     # ================================================================
     # 5) DEFENSE vs EVADE
     # ================================================================
     if ka == DiceKind.DEFENSE and kb == DiceKind.EVADE:
         if va > vb:
+            # 방어 승리 – 피해 없음
             apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_WIN)
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_LOSS)
             apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_DEFEND)
-            return "a"
+            return "a", va, vb
         elif vb > va:
+            # 회피 승리 – 피해 없음 + 회피 주사위 값만큼 SP 회복
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_WIN)
             apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_LOSS)
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_DODGE)
-            return "b"
+
+            # 회피 주사위 눈만큼 정신력 회복
+            if hasattr(ub, "recover_sp"):
+                ub.recover_sp(vb)
+
+            return "b", va, vb
         else:
-            return "tie"
+            return "tie", va, vb
 
     # ================================================================
     # 6) EVADE vs EVADE
     # ================================================================
     if ka == DiceKind.EVADE and kb == DiceKind.EVADE:
-        # 피해 없음, 승패만 존재
+        # 피해 없음, 승패만 존재 (SP 회복 없음)
         if va > vb:
             apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_WIN)
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_LOSS)
             apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_DODGE)
-            return "a"
+            return "a", va, vb
         elif vb > va:
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_CLASH_WIN)
             apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_CLASH_LOSS)
             apply_dice_trigger(dice_b, ub, ua, EffectTrigger.ON_DODGE)
-            return "b"
+            return "b", va, vb
         else:
-            return "tie"
+            return "tie", va, vb
+
+    # 여기까지 안 걸리는 주사위 조합(예: 아직 구현 안 한 타입)이더라도
+    # 최소한 None이 아니라 "tie"를 리턴하게 해서 언팩 에러를 막는다.
+    return "tie", va, vb
+
 
 
 def is_unit_alive_and_present(u):
@@ -1507,10 +1592,14 @@ def build_dice_list_for_page(page: CombatPage, owner):
 
 
 def resolve_one_sided_attack(dice: Dice, attacker, defender):
+    """
+    일방공 주사위 1개 처리.
+    🔹 주목 연출을 위해 굴린 값(val)을 리턴한다.
+    """
     if not can_unit_roll_dice(attacker):
-        return
+        return None
     if not is_unit_alive_and_present(defender):
-        return
+        return None
 
     val = dice.roll()
 
@@ -1521,17 +1610,33 @@ def resolve_one_sided_attack(dice: Dice, attacker, defender):
         # 🔹 일방 공격도 감정 코인 지급
         award_emotion_for_hit(attacker, defender, val, defender.is_dead)
     else:
+        # 방어/회피 일방 주사위는 지금은 별도 처리 없음
         pass
 
+    return val
 
 
-def resolve_clash_between_units(unit_a, unit_b):
+
+
+def resolve_clash_between_units(
+    unit_a,
+    unit_b,
+    screen=None,
+    font=None,
+    all_units=None,
+    ally_group=None,
+    enemy_group=None,
+    show_enemy_arrows=True,
+    show_ally_arrows=True,
+    show_mutual_arrows=True,
+):
     """
     unit_a ↔ unit_b 가 서로를 노리는 합공 1쌍에 대한 전체 처리.
     - 각자의 planned_page를 사용.
     - 코스트(빛)를 먼저 지불.
     - 주사위를 인덱스 순서대로 1:1로 합 처리.
     - 더 많은 주사위를 가진 쪽의 남은 주사위는 일방공격.
+    - 🔹 주목 모드: 각 주사위/일방공마다 화면을 갱신하고 잠깐 멈춘다.
     """
     if not is_unit_alive_and_present(unit_a) or not is_unit_alive_and_present(unit_b):
         return
@@ -1542,12 +1647,11 @@ def resolve_clash_between_units(unit_a, unit_b):
     if page_a is None or page_b is None:
         return
 
-    # 코스트 지불 실패 시 그 쪽 행동은 스킵
+    # 코스트 지불
     if not unit_a.spend_light(page_a.cost):
         print(f"[빛 부족] {page_a.name}")
         page_a = None
     else:
-        # 🔹 실제로 코스트를 지불했다면, 이 막에서 사용한 책장 수 +1
         if hasattr(unit_a, "pages_used_this_scene"):
             unit_a.pages_used_this_scene += 1
 
@@ -1579,20 +1683,60 @@ def resolve_clash_between_units(unit_a, unit_b):
 
         # 둘 다 주사위를 굴릴 수 있음 → 합 처리
         if can_a and can_b:
-            resolve_clash(d_a, d_b)
-        # A만 굴릴 수 있음 → A 일방 공격
-        elif can_a and (not can_b):
-            resolve_one_sided_attack(d_a, unit_a, unit_b)
-        # B만 굴릴 수 있음 → B 일방 공격
-        elif can_b and (not can_a):
-            resolve_one_sided_attack(d_b, unit_b, unit_a)
-        # 둘 다 못 굴리면 이 인덱스는 그냥 스킵
+            winner, va, vb = resolve_clash(d_a, d_b)
 
-def resolve_one_sided_sequence(attacker, defender):
+            # 🔹 주목: 합 주사위 한 번 처리 후 화면 갱신 + 딜레이
+            draw_focus_step(
+                screen, font,
+                all_units, ally_group, enemy_group,
+                show_enemy_arrows, show_ally_arrows, show_mutual_arrows,
+                dice_owner_a=unit_a, value_a=va,
+                dice_owner_b=unit_b, value_b=vb,
+            )
+
+        # A만 굴릴 수 있음 → A 일방 공격
+        elif can_a:
+            val = resolve_one_sided_attack(d_a, unit_a, unit_b)
+            draw_focus_step(
+                screen, font,
+                all_units, ally_group, enemy_group,
+                show_enemy_arrows, show_ally_arrows, show_mutual_arrows,
+                dice_owner_a=unit_a, value_a=val,
+                dice_owner_b=None, value_b=None,
+            )
+
+        # B만 굴릴 수 있음 → B 일방 공격
+        elif can_b:
+            val = resolve_one_sided_attack(d_b, unit_b, unit_a)
+            draw_focus_step(
+                screen, font,
+                all_units, ally_group, enemy_group,
+                show_enemy_arrows, show_ally_arrows, show_mutual_arrows,
+                dice_owner_a=unit_b, value_a=val,
+                dice_owner_b=None, value_b=None,
+            )
+        else:
+            # 둘 다 굴릴 수 없으면 아무 일도 안 함
+            pass
+
+
+def resolve_one_sided_sequence(
+    attacker,
+    defender,
+    screen=None,
+    font=None,
+    all_units=None,
+    ally_group=None,
+    enemy_group=None,
+    show_enemy_arrows=True,
+    show_ally_arrows=True,
+    show_mutual_arrows=True,
+):
     """
     공격자 attacker가 defender를 향해 planned_page로 일방 공격하는 전체 처리.
     - 코스트 지불
     - 주사위 순서대로 굴리며, ATTACK 주사위만 실제 피해를 준다.
+    - 🔹 주목 모드: 각 주사위마다 화면을 갱신하고 잠깐 멈춘다.
     """
     if not is_unit_alive_and_present(attacker):
         return
@@ -1607,7 +1751,6 @@ def resolve_one_sided_sequence(attacker, defender):
         print(f"[빛 부족] {page.name}")
         return
     else:
-        # 🔹 코스트 지불 성공 → 이 막에서 사용한 책장 수 +1
         if hasattr(attacker, "pages_used_this_scene"):
             attacker.pages_used_this_scene += 1
 
@@ -1618,20 +1761,35 @@ def resolve_one_sided_sequence(attacker, defender):
             break
         if not is_unit_alive_and_present(defender):
             break
-        resolve_one_sided_attack(d, attacker, defender)
 
-def execute_scene_actions(all_units, ally_group, enemy_group):
+        val = resolve_one_sided_attack(d, attacker, defender)
+
+        draw_focus_step(
+            screen, font,
+            all_units, ally_group, enemy_group,
+            show_enemy_arrows, show_ally_arrows, show_mutual_arrows,
+            dice_owner_a=attacker, value_a=val,
+            dice_owner_b=None, value_b=None,
+        )
+
+
+def execute_scene_actions(
+    screen,
+    font,
+    all_units,
+    ally_group,
+    enemy_group,
+    show_enemy_arrows=True,
+    show_ally_arrows=True,
+    show_mutual_arrows=True,
+):
     """
     이번 막에서 모든 planned_page / planned_target을
-    속도 순서대로 처리하고, 막을 종료하는 함수.
-
-    🔹중요 변경점:
-      - 더 이상 speed_dice_count를 "행동 횟수"로 사용하지 않는다.
-        → 유닛당 공격 행동은 최대 1번.
-      - speed_dice_count는 순수하게 "속도 주사위(토큰) 개수"만 의미한다.
-        (공격 vs 방어 토큰을 구분하는 데 사용)
+    속도 순서대로 처리하고, 막을 종료하기 전까지의 전투 연출을 담당한다.
+    🔹 주목 모드: 각 액션(합공/일방공) 내부에서 한 주사위씩
+       draw_focus_step을 호출해 화면에 보여준다.
     """
-    # 1) 합공 쌍 찾기 (여전히 유닛 단위)
+    # 1) 합공 쌍 찾기
     mutual_pairs = find_mutual_target_pairs(ally_group, enemy_group)
     units_in_pairs = set()
     for a, e in mutual_pairs:
@@ -1639,14 +1797,10 @@ def execute_scene_actions(all_units, ally_group, enemy_group):
         units_in_pairs.add(e)
 
     # 2) 액션 리스트 구성
-    #    (kind, speed, 공격자/유닛A, 피격자/유닛B)
-    #    kind = "clash" 또는 "one_sided"
     actions = []
 
     # 합공 액션들
-    # 합공 액션들
     for a, e in mutual_pairs:
-        # 양쪽의 '실제로 공격에 사용하는 토큰' 속도를 기준으로 정렬용 속도 결정
         sv_a = getattr(a, "speed_values", [])
         idx_a = getattr(a, "attack_token_index", None)
         if idx_a is not None and 0 <= idx_a < len(sv_a):
@@ -1662,7 +1816,6 @@ def execute_scene_actions(all_units, ally_group, enemy_group):
             spd_e = getattr(e, "current_speed", 0) or 0
 
         effective_speed = max(spd_a, spd_e)
-
         actions.append(("clash", effective_speed, a, e))
 
     # 합공에 포함되지 않은 유닛들의 일방 공격
@@ -1679,8 +1832,6 @@ def execute_scene_actions(all_units, ally_group, enemy_group):
         if not is_unit_alive_and_present(target):
             continue
 
-        # ✅ 더 이상 speed_dice_count만큼 여러 번 넣지 않는다.
-        #    대신, 실제로 책장을 사용한 속도 토큰의 값을 사용한다.
         sv_u = getattr(u, "speed_values", [])
         idx_u = getattr(u, "attack_token_index", None)
         if idx_u is not None and 0 <= idx_u < len(sv_u):
@@ -1693,13 +1844,37 @@ def execute_scene_actions(all_units, ally_group, enemy_group):
     actions.sort(key=lambda x: x[1], reverse=True)
 
     # 4) 실제 처리
-    for kind, _, a, b in actions:
-        if not is_unit_alive_and_present(a) or not is_unit_alive_and_present(b):
+    for kind, spd, a, b in actions:
+        if not is_unit_alive_and_present(a):
             continue
+        if not is_unit_alive_and_present(b):
+            continue
+
         if kind == "clash":
-            resolve_clash_between_units(a, b)
+            resolve_clash_between_units(
+                a, b,
+                screen=screen,
+                font=font,
+                all_units=all_units,
+                ally_group=ally_group,
+                enemy_group=enemy_group,
+                show_enemy_arrows=show_enemy_arrows,
+                show_ally_arrows=show_ally_arrows,
+                show_mutual_arrows=show_mutual_arrows,
+            )
         elif kind == "one_sided":
-            resolve_one_sided_sequence(a, b)
+            resolve_one_sided_sequence(
+                a, b,
+                screen=screen,
+                font=font,
+                all_units=all_units,
+                ally_group=ally_group,
+                enemy_group=enemy_group,
+                show_enemy_arrows=show_enemy_arrows,
+                show_ally_arrows=show_ally_arrows,
+                show_mutual_arrows=show_mutual_arrows,
+            )
+
 
 
 
@@ -1929,7 +2104,16 @@ def run_battle(screen, stage_code):
 
                     # 2) 이미 속도가 굴려진 상태라면 → 실제 전투(합/일방 공격) 실행
                     else:
-                        execute_scene_actions(all_units, ally_group, enemy_group)
+                        execute_scene_actions(
+                            screen,
+                            font,
+                            all_units,
+                            ally_group,
+                            enemy_group,
+                            show_enemy_arrows,
+                            show_ally_arrows,
+                            show_mutual_arrows,
+                        )
 
                         # 막 종료 처리 (상태이상, 카드 드로우 등)
                         end_scene(all_units)

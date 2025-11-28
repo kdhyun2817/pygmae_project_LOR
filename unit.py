@@ -188,18 +188,14 @@ class Unit(pygame.sprite.Sprite):
         self.max_light = 3
         self.light = 3
 
-        # --- 빛 시스템 ---
-        # 라오루 기준 기본은 3빛, 감정 1단계에서 +1 → 4빛 되는 구조
-        self.max_light = 3
-        self.light = 3
-
         # --- 빛 예약(플레이 계획용) ---
-        # 여러 토큰이 책장을 예약할 때, 실제로는 나중에 소모되지만
-        # UI 상에서는 미리 빠진 것처럼 보이게 하기 위한 임시 값
         self.light_reserved = 0  # 예약된 빛 총합
         self.light_reserved_per_token = {}  # token_index -> cost
         self.light_blink_timer = 0  # 빛 UI 깜빡임 시간(프레임 카운트)
 
+        # --- 대미지 / 회복 플로팅 텍스트 ---
+        #   {"text": "-5", "color": (r,g,b), "frames": 남은 프레임, "dy": y오프셋}
+        self.damage_popups = []
 
         # --- 내성 (HP/SP 분리) ---
         default_resist = {
@@ -411,6 +407,10 @@ class Unit(pygame.sprite.Sprite):
         if self.is_dead or self.is_escaped:
             return
 
+        # 🔹 HP/SP 변화량 계산을 위해 기존 값 저장
+        hp_before = self.hp
+        sp_before = self.sp
+
         hp_resist_level = self.hp_resist_cur.get(damage_type, ResistLevel.NORMAL)
         sp_resist_level = self.sp_resist_cur.get(damage_type, ResistLevel.NORMAL)
 
@@ -428,17 +428,10 @@ class Unit(pygame.sprite.Sprite):
                 vuln_bonus += st.stacks
 
         if vuln_bonus > 0:
-            hp_damage *= (1 + vuln_bonus)
-            sp_damage *= (1 + vuln_bonus)
+            hp_damage *= (1 + vuln_bonus * 0.25)
+            sp_damage *= (1 + vuln_bonus * 0.25)
 
-        # 3. 표적 / 연기 / 부식 같은 "피해 증폭" 상태이상들
-        # --- 표적(Target): +50%
-        for st in self.status_effects:
-            if st.type == StatusType.TARGET:
-                hp_damage *= 1.5
-                sp_damage *= 1.5
-
-        # --- 연기(Smoke): 1스택당 +5%
+        # 3. 연기(Smoke), 부식(Corrosion) 등 추가 계수
         for st in self.status_effects:
             if st.type == StatusType.SMOKE:
                 hp_damage *= (1 + 0.05 * st.stacks)
@@ -487,6 +480,18 @@ class Unit(pygame.sprite.Sprite):
         if self.sp <= 0 and (not self.is_staggered) and (not self.is_dead) and (not self.is_escaped):
             self.on_staggered()
 
+        # 8. HP/SP 변화량을 플로팅 텍스트로 표시
+        hp_delta = int(round(self.hp - hp_before))
+        sp_delta = int(round(self.sp - sp_before))
+
+        # HP가 줄어들었으면 빨간 글씨로 "-N"
+        if hp_delta < 0:
+            self.add_damage_popup(str(hp_delta), HP_BAR_COLOR)
+
+        # SP가 줄어들었으면 하늘색 글씨로 "-N"
+        if sp_delta < 0:
+            self.add_damage_popup(str(sp_delta), SP_BAR_COLOR)
+
     def take_hp_sp_direct(self, amount):
         """방어/회피 주사위용 – 내성 무시 HP/SP 데미지"""
         if self.is_dead or self.is_escaped:
@@ -503,14 +508,29 @@ class Unit(pygame.sprite.Sprite):
         """흐트러짐 피해"""
         if self.is_dead or self.is_escaped:
             return
+
+        sp_before = self.sp
         self.sp -= amount
 
         if self.sp <= 0 and not self.is_staggered:
             self.on_staggered()
 
+        # SP 감소 플로팅 텍스트
+        sp_delta = int(round(self.sp - sp_before))
+        if sp_delta < 0:
+            self.add_damage_popup(str(sp_delta), SP_BAR_COLOR)
+
     def recover_sp(self, amount):
+        """SP 회복 – 회복량을 하늘색 '+N'으로 표시"""
+        if amount <= 0:
+            return
+
+        sp_before = self.sp
         self.sp = min(self.sp + amount, self.max_sp)
 
+        sp_delta = int(round(self.sp - sp_before))
+        if sp_delta > 0:
+            self.add_damage_popup(f"+{sp_delta}", SP_BAR_COLOR)
 
     # =============================
     # 막 종료 판정
@@ -777,12 +797,39 @@ class Unit(pygame.sprite.Sprite):
             pygame.draw.polygon(surface, fill_color, points)
             pygame.draw.polygon(surface, LIGHT_BORDER_COLOR, points, 1)
 
-
     def draw(self, surface, font):
         surface.blit(self.image, self.rect)
         self.draw_speed_token(surface, font)
         self.draw_hp_sp_bar(surface)
         self.draw_light(surface)
+
+        # --- HP/SP 변화 플로팅 텍스트 ---
+        for i, p in enumerate(self.damage_popups):
+            text_surf = font.render(p["text"], True, p["color"])
+            x = self.rect.centerx - text_surf.get_width() // 2
+            # 여러 개가 겹치면 한 줄씩 더 위로
+            y = self.rect.top - 20 + p["dy"] - i * 16
+            surface.blit(text_surf, (x, y))
+
+    def add_damage_popup(self, text, color):
+        """HP/SP 변화량을 머리 위에 잠깐 띄우는 용도의 팝업 추가"""
+        self.damage_popups.append({
+            "text": text,
+            "color": color,
+            "frames": 40,  # 대략 0.6~0.7초 정도 (60fps 기준)
+            "dy": 0,
+        })
+
+    def update(self):
+        """SpriteGroup.update()에서 호출됨 – 팝업을 위로 올리면서 지우기"""
+        new_list = []
+        for p in self.damage_popups:
+            p["frames"] -= 1
+            p["dy"] -= 1   # 프레임마다 살짝 위로
+            if p["frames"] > 0:
+                new_list.append(p)
+        self.damage_popups = new_list
+
 
 
 
