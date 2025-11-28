@@ -128,6 +128,9 @@ def reset_plans(all_units):
             u.token_plans = {}
         if hasattr(u, "initial_target"):
             u.initial_target = None
+        if hasattr(u, "token_prev_targets"):
+            u.token_prev_targets = {}
+
 
         # 🔹 빛 예약도 같이 초기화
         if hasattr(u, "light_reserved"):
@@ -455,6 +458,8 @@ def create_ally_units():
 
 
 
+# battle.py 중 일부
+
 def create_enemies_from_stage(stage_code):
     """stages.py의 STAGES에서 enemy 데이터 읽어서 생성"""
     data = STAGES[stage_code]
@@ -472,18 +477,27 @@ def create_enemies_from_stage(stage_code):
             spec["hp_res"],
             spec["sp_res"],
         )
+
+        # 🔹 적도 기본 속도 코인 2개 사용
+        u.speed_dice_count = 2
+
         enemy_group.add(u)
 
     return enemy_group
 
 
+
 def plan_enemy_actions(enemy_group, ally_group):
     """
     이번 막에서 적들이 어떤 책장으로 누구를 공격할지 미리 정해둔다.
-    - 본인이 가진 hand 중에서 코스트가 현재 빛(self.light) 이하인 책장만 후보
-    - 그 중 하나를 랜덤 선택
-    - 아군 중 살아있는 유닛 하나를 랜덤 선택해서 타깃으로 지정
+    - hand 에서 코스트가 현재 빛(self.light) 이하인 책장만 후보
+    - 속도 토큰 개수(speed_dice_count)만큼 토큰별 계획을 세움
+    - 단, "각 토큰에 배정된 책장 코스트의 총합"이 현재 빛을 넘지 않도록 제한
+    - 토큰별 계획은 e.token_plans[token_idx] = {"page": CombatPage, "target": Unit}
+    - 대표 planned_page/planned_target 은 첫 번째 토큰 계획으로 맞춰둔다
+      (기존 해석/합공/일반 일방공 로직이 깨지지 않도록 호환용)
     """
+
     # 현재 살아있는 아군 목록
     alive_allies = [a for a in ally_group if not a.is_dead and not a.is_escaped]
 
@@ -493,57 +507,151 @@ def plan_enemy_actions(enemy_group, ally_group):
             e.planned_page = None
         if hasattr(e, "planned_target"):
             e.planned_target = None
+        if hasattr(e, "attack_token_index"):
+            e.attack_token_index = None
+        if hasattr(e, "token_plans"):
+            e.token_plans = {}
+        else:
+            e.token_plans = {}
 
-        if e.is_dead or e.is_escaped:
+        # 빛 예약/깜빡임도 초기화
+        if hasattr(e, "light_reserved"):
+            e.light_reserved = 0
+        if hasattr(e, "light_reserved_per_token"):
+            e.light_reserved_per_token = {}
+        if hasattr(e, "light_blink_timer"):
+            e.light_blink_timer = 0
+
+        # 죽었거나 도망간 적은 스킵
+        if getattr(e, "is_dead", False) or getattr(e, "is_escaped", False):
             continue
         if not alive_allies:
             continue
 
-        hand = getattr(e, "hand", None)
+        hand = list(getattr(e, "hand", []))
         if not hand:
             continue
 
-        current_light = getattr(e, "light", 0)
-
-        # 현재 빛으로 사용할 수 있는 책장만 필터링
-        affordable = [p for p in hand if p.cost <= current_light]
-
-        if not affordable:
+        # 현재 사용 가능한 빛
+        current_light = int(getattr(e, "light", 0))
+        if current_light <= 0:
             continue
 
-        page = random.choice(affordable)
-        target = random.choice(alive_allies)
+        # 이 적이 가진 속도 토큰 개수
+        speed_dice_count = int(getattr(e, "speed_dice_count", 1))
+        if speed_dice_count <= 0:
+            speed_dice_count = 1
 
-        e.planned_page = page
-        e.planned_target = target
+        remaining_light = current_light
+        token_plans = {}
 
-        e.initial_target = target
+        # 토큰마다 책장/타겟을 하나씩 배정 (코스트 합 제한)
+        for token_idx in range(speed_dice_count):
+            # 현재 남은 빛으로 쓸 수 있는 책장만 후보
+            candidates = [p for p in hand if getattr(p, "cost", 0) <= remaining_light]
+            if not candidates:
+                break
+
+            page = random.choice(candidates)
+            target = random.choice(alive_allies)
+
+            # 🔹 이 공격이 "타겟의 몇 번 토큰"을 치는지 결정
+            def_idx = 0
+            if hasattr(target, "get_speed_token_centers"):
+                centers_t = target.get_speed_token_centers()
+                if centers_t:
+                    # 기본은 방어 토큰 인덱스(defense_token_index)를 쓰되,
+                    # 범위 밖이면 0번으로 보정
+                    d_idx = getattr(target, "defense_token_index", 0) or 0
+                    if 0 <= d_idx < len(centers_t):
+                        def_idx = d_idx
+                    else:
+                        def_idx = 0
+                else:
+                    def_idx = 0
+            else:
+                def_idx = 0
+
+            token_plans[token_idx] = {
+                "page": page,
+                "target": target,
+                "def_token_index": def_idx,  # ✅ 토큰별로 맞는 방어 토큰 인덱스 저장
+            }
+
+            # 코스트 누적
+            cost = getattr(page, "cost", 0)
+            remaining_light -= cost
+            if remaining_light <= 0:
+                break
+
+        # 이 적이 이번 막에 아무것도 안 쓰는 경우
+        if not token_plans:
+            continue
+
+        # 실제 계획 저장
+        e.token_plans = token_plans
+
+        # 기존 유닛 단위 planned_page/planned_target 을
+        # "첫 번째 토큰 계획"으로 맞춰서 기존 처리와 호환
+        first_idx = sorted(token_plans.keys())[0]
+        first_plan = token_plans[first_idx]
+        e.planned_page = first_plan["page"]
+        e.planned_target = first_plan["target"]
+        e.attack_token_index = first_idx
+
+        # 🔹 빛 예약: 적도 이번 막에 쓸 책장들의 코스트 합만큼 깜빡이게
+        if not hasattr(e, "light_reserved_per_token"):
+            e.light_reserved_per_token = {}
+
+        e.light_reserved_per_token = {}
+        total_reserved = 0
+        for idx, plan in token_plans.items():
+            page = plan.get("page")
+            if page is None:
+                continue
+            cost = getattr(page, "cost", 0)
+            if cost <= 0:
+                continue
+            e.light_reserved_per_token[idx] = cost
+            total_reserved += cost
+
+        # 실제 예약 빛 = 토큰별 코스트 합 (현재 빛보다 더 크지는 않도록 안전 처리)
+        e.light_reserved = min(total_reserved, current_light)
+
+        # 깜빡임 길이는 코스트 합에 비례(그냥 감성용)
+        if hasattr(e, "light_blink_timer"):
+            e.light_blink_timer = max(getattr(e, "light_blink_timer", 0), total_reserved * 10)
 
 
 
-def update_counter_target_on_attack(attacker, defender, atk_speed=None):
+
+def update_counter_target_on_attack(attacker, defender, atk_speed=None, def_speed=None):
     """
     공격자(attacker)의 특정 속도 토큰이 defender를 타겟팅했을 때,
     defender가 누구를 노릴지(반타겟)를 갱신하는 함수.
 
-    🔹 규칙 (LoR식 간단 버전, 토큰 속도 반영):
+    🔹 규칙 (토큰 속도 반영 버전):
 
       - 비교에 쓰는 속도:
         * 공격자: 이번에 사용한 '공격 토큰 속도' (atk_speed 인자로 넘어옴)
-        * 수비자: defender.defense_speed  (가장 느린 속도 주사위)
+        * 수비자:
+            - def_speed 인자가 들어오면 그 값 사용 (클릭한 방어 코인 속도)
+            - 없으면 defender.defense_speed (가장 느린 속도)
 
       - [우선 규칙] 처음에 노리던 애가 나를 때리면 (initial_target == attacker)
         → 속도와 무관하게 그 공격자로 다시 타겟을 되돌린다.
 
-      - [규칙 1] 공격자가 나보다 느리거나 같으면 (atk_speed <= defense_speed)
+      - [규칙 1] 공격자가 나보다 느리거나 같으면 (atk_speed <= def_speed)
         → 타겟 변경 없이 기존 planned_target 유지 (합 뺏기 실패)
 
-      - [규칙 2] 공격자가 나보다 빠르면 (atk_speed > defense_speed)
+      - [규칙 2] 공격자가 나보다 빠르면 (atk_speed > def_speed)
         → defender.planned_target 을 공격자로 변경 (합 뺏기 성공)
     """
     if attacker is None or defender is None:
         return
-    if attacker.is_dead or attacker.is_escaped or defender.is_dead or defender.is_escaped:
+    if attacker.is_dead or attacker.is_escaped:
+        return
+    if defender.is_dead or defender.is_escaped:
         return
 
     # 같은 팀이면 반타겟팅 안 함
@@ -561,8 +669,11 @@ def update_counter_target_on_attack(attacker, defender, atk_speed=None):
     else:
         atk_spd = getattr(attacker, "current_speed", None)
 
-    # 방어 속도: 방어용 속도 주사위(defense_speed)를 사용
-    def_spd = getattr(defender, "defense_speed", None)
+    # 방어 속도: 인자로 넘긴 def_speed(= 클릭한 방어 코인 속도)가 우선
+    if def_speed is not None:
+        def_spd = def_speed
+    else:
+        def_spd = getattr(defender, "defense_speed", None)
 
     # [우선 규칙] 처음에 노리던 애가 나를 때리면 → 속도 상관없이 되돌리기
     initial = getattr(defender, "initial_target", None)
@@ -578,9 +689,56 @@ def update_counter_target_on_attack(attacker, defender, atk_speed=None):
     if atk_spd <= def_spd:
         return
 
-    # [규칙 2] 공격자가 나보다 빠르면 → 그 공격자로 갈아탄다 (합 뺏기 성공)
+    # [규칙 2] 공격자가 더 빠르면 그 공격자를 새 타겟으로 (합 뺏기 성공)
     defender.planned_target = attacker
 
+    # 🔽 여기부터 추가: 방금 합을 '뺏어온' 방어 토큰의 계획도 같이 바꿔서
+    #     예전 대상에게 가던 빨간 화살표를 없애준다.
+    token_plans = getattr(defender, "token_plans", None)
+    if isinstance(token_plans, dict) and token_plans:
+        speed_values = getattr(defender, "speed_values", [])
+        def_index = None
+
+        # 1) def_speed(이번에 클릭한 방어 코인 속도)와 speed_values를 비교해서
+        #    해당 속도를 가진 토큰 인덱스를 찾아본다.
+        if def_spd is not None and speed_values:
+            for idx, sp in enumerate(speed_values):
+                if sp == def_spd:
+                    def_index = idx
+                    break
+
+        # 2) 못 찾으면 기존 attack_token_index나 0번 토큰으로 fallback
+        if def_index is None:
+            def_index = getattr(defender, "attack_token_index", None)
+        if def_index is None:
+            def_index = 0
+
+        # 이 토큰이 이제 공격에 쓰이는 토큰이다.
+        defender.attack_token_index = def_index
+
+        # 3) 해당 토큰의 token_plan 을 "attacker 쪽으로" 돌려준다.
+        #    이때, 나중에 공격을 취소했을 때를 위해
+        #    '원래 누구를 노리던 토큰이었는지'를 따로 저장해 둔다.
+        if not hasattr(defender, "token_prev_targets"):
+            defender.token_prev_targets = {}
+
+        if def_index in token_plans:
+            # 아직 이전 타겟을 기록해 두지 않았다면 한 번만 저장
+            prev_target = token_plans[def_index].get("target")
+            if (prev_target is not None
+                    and prev_target is not attacker
+                    and def_index not in defender.token_prev_targets):
+                defender.token_prev_targets[def_index] = prev_target
+
+            # 이제 이 토큰은 공격자를 노리도록 변경
+            token_plans[def_index]["target"] = attacker
+        else:
+            # 혹시 그 토큰 인덱스로 된 계획이 없으면 하나 만들어 준다.
+            page = getattr(defender, "planned_page", None)
+            token_plans[def_index] = {
+                "page": page,
+                "target": attacker,
+            }
 
 
 def retarget_defender_after_cancel(defender, all_units):
@@ -589,13 +747,13 @@ def retarget_defender_after_cancel(defender, all_units):
     defender의 planned_target을 다시 잡아주는 함수.
 
     규칙:
-      1) defender를 현재 타겟팅 중인 유닛들 중
+      1) defender를 현재 '토큰 단위로' 타겟팅 중인 유닛들 중
          (살아 있고, 반대 진영이며, 속도가 정해진 유닛)
          가장 속도가 빠른 유닛이 있다면 그 유닛으로 타겟 변경
          → 합공 상태 형성 (서로를 노리게 됨)
 
-      2) 그런 유닛이 없다면 defender.initial_target 으로 복귀
-         (initial_target이 살아 있을 때만)
+      2) 그런 유닛이 하나도 없다면 defender.initial_target 으로 복귀
+         (initial_target이 살아 있을 때만, 아니면 타겟 해제)
     """
     if defender is None:
         return
@@ -605,31 +763,60 @@ def retarget_defender_after_cancel(defender, all_units):
     best_attacker = None
     best_speed = -1
 
+    # 1) 아직 defender를 때리는 토큰이 남아 있는 유닛이 있는지 토큰 계획으로 확인
     for u in all_units:
         if u is defender:
             continue
         if u.is_dead or u.is_escaped:
             continue
+        if u.is_ally == defender.is_ally:
+            continue
 
-        # 나를 타겟팅 중인 유닛인지, 그리고 반대 진영인지 확인
-        if getattr(u, "planned_target", None) is defender and (u.is_ally != defender.is_ally):
-            spd = getattr(u, "current_speed", None)
-            if spd is None:
-                continue
-            if spd > best_speed:
-                best_speed = spd
-                best_attacker = u
+        token_plans = getattr(u, "token_plans", {})
+        is_attacking_defender = False
 
+        # 이 유닛의 어떤 토큰이라도 defender를 노리고 있으면 "공격 중"으로 간주
+        for plan in token_plans.values():
+            if plan.get("target") is defender:
+                is_attacking_defender = True
+                break
+
+        if not is_attacking_defender:
+            continue
+
+        spd = getattr(u, "current_speed", None)
+        if spd is None:
+            continue
+
+        if spd > best_speed:
+            best_speed = spd
+            best_attacker = u
+
+    # 2) 아직 나를 때리는 유닛이 남아 있으면 → 그 중 가장 빠른 애로 타겟 유지/변경
     if best_attacker is not None:
-        # 가장 빠른 공격자와 합공
         defender.planned_target = best_attacker
+        return
+
+    # 3) 아무도 나를 안 때리면 → 원래 타겟(initial_target)과 토큰별 원래 타겟으로 복귀
+    #    (합을 뺏었다가 공격을 전부 취소한 경우 등)
+    #    update_counter_target_on_attack 에서 defender.token_prev_targets 에
+    #    저장해 둔 값이 있으면 먼저 해당 토큰 계획들을 원복해 준다.
+    prev_dict = getattr(defender, "token_prev_targets", None)
+    if isinstance(prev_dict, dict) and prev_dict:
+        token_plans = getattr(defender, "token_plans", {})
+        for idx, prev_tgt in list(prev_dict.items()):
+            if idx in token_plans:
+                token_plans[idx]["target"] = prev_tgt
+        # 한 번 되돌렸으면 초기화
+        defender.token_prev_targets = {}
+
+    # 그리고 유닛 단위 planned_target 은 initial_target 기준으로 되돌린다.
+    initial = getattr(defender, "initial_target", None)
+    if initial is not None and not initial.is_dead and not initial.is_escaped:
+        defender.planned_target = initial
     else:
-        # 아무도 나를 안 때리면 → 원래 타겟으로 복귀
-        initial = getattr(defender, "initial_target", None)
-        if initial is not None and not initial.is_dead and not initial.is_escaped:
-            defender.planned_target = initial
-        else:
-            defender.planned_target = None
+        # 원래 타겟도 없거나 죽었으면 그냥 타겟 해제
+        defender.planned_target = None
 
 
 def draw_unit_info_panel(surface, font, hovered_unit):
@@ -763,7 +950,7 @@ def get_hand_pages_for_owner(owner, token_index):
     hand에 어떤 페이지들을 보여줄지 결정 (토큰 단위).
     - owner가 None이면: []
     - 적:
-        - 해당 토큰에 planned_page가 있으면: 그 카드 1장만
+        - token_plans[token_index] 에 page가 있으면 그 카드 1장만
         - 아니면: []
     - 아군:
         - 해당 토큰에 이미 책장이 배정되어 있으면: 그 책장 1장만
@@ -773,27 +960,27 @@ def get_hand_pages_for_owner(owner, token_index):
     if owner is None:
         return []
 
-    # 적
+    # 🔹 적: 토큰별 token_plans에서 가져오기
     if not owner.is_ally:
-        page = getattr(owner, "planned_page", None)
-        # 적은 아직 유닛 단위 계획이므로, 일단 기존 planned_page만 노출
-        # (나중에 적도 토큰 단위로 확장할 수 있음)
-        return [page] if page is not None else []
+        token_plans = getattr(owner, "token_plans", {})
+        if token_index is not None and token_index in token_plans:
+            page = token_plans[token_index].get("page")
+            return [page] if page is not None else []
+        # 적 손패 UI는 따로 안보니까 기본은 빈 리스트
+        return []
 
-    # 아군
-    # 토큰 인덱스가 지정되어 있지 않으면 그냥 손패 전체를 보여준다.
+    # 🔹 아군 (기존 로직 그대로)
     if token_index is None:
         return list(getattr(owner, "hand", []))
 
-    # 이 아군 유닛이 이 토큰에 대해 이미 공격 계획을 가진 경우
     token_plans = getattr(owner, "token_plans", {})
     plan = token_plans.get(token_index)
     if plan is not None:
         page = plan.get("page")
         return [page] if page is not None else []
 
-    # 아직 이 토큰으로는 아무것도 계획하지 않음 → 현재 손패 그대로
     return list(getattr(owner, "hand", []))
+
 
 
 
@@ -921,14 +1108,10 @@ def draw_planned_arrows(surface, units, color, mutual_pairs=None):
                 continue
 
             # 🔹 이 (공격 유닛, 타깃 유닛) 조합이 합공 쌍이면
-            #    → 그 유닛의 "합공에 쓰이는 토큰"만 파란/빨간 화살표를 숨긴다.
-            #      (나머지 토큰은 같은 대상이라도 일방 공격 화살표를 그려야 함)
+            #    → 노란 합공 화살표만 보여주고, 파란/빨간 화살표는 전부 숨긴다.
             if (u, target) in pair_set:
-                clash_idx = getattr(u, "attack_token_index", None)
-                # attack_token_index 가 설정되어 있고,
-                # 지금 도는 token_idx 가 그 합공 토큰이면 → 파란/빨간 화살표 생략
-                if clash_idx is None or token_idx == clash_idx:
-                    continue
+                continue
+
 
             # 시작점: 공격 토큰 코인
             if 0 <= token_idx < len(centers_u):
@@ -937,9 +1120,17 @@ def draw_planned_arrows(surface, units, color, mutual_pairs=None):
                 start = centers_u[0] if centers_u else (u.rect.centerx, u.rect.top - 40)
 
             # 끝점: 타깃 유닛의 방어 토큰 코인
+            # 끝점: 타깃 유닛의 방어 토큰 코인
             if hasattr(target, "get_speed_token_centers"):
                 centers_t = target.get_speed_token_centers()
-                def_idx = getattr(target, "defense_token_index", None)
+
+                # ✅ 1순위: 이 공격 계획에 저장된 def_token_index
+                def_idx = plan.get("def_token_index", None)
+
+                # ✅ 2순위: 유닛 전체의 defense_token_index (기존 방식)
+                if def_idx is None:
+                    def_idx = getattr(target, "defense_token_index", None)
+
                 if def_idx is not None and 0 <= def_idx < len(centers_t):
                     end = centers_t[def_idx]
                 else:
@@ -985,10 +1176,19 @@ def draw_mutual_arrows(surface, pairs, color):
         if not is_unit_alive_and_present(a) or not is_unit_alive_and_present(e):
             continue
 
-        # 아군 A 시작점
+        # 아군 A 시작점: 실제로 E를 노리는 토큰 인덱스를 우선 사용
+        atk_idx_a = None
+        token_plans_a = getattr(a, "token_plans", {})
+        for t_idx, plan in token_plans_a.items():
+            if plan.get("target") is e:
+                atk_idx_a = t_idx
+                break
+
         if hasattr(a, "get_speed_token_centers"):
             centers_a = a.get_speed_token_centers()
-            atk_idx_a = getattr(a, "attack_token_index", 0) or 0
+            # token_plans 에서 못 찾았으면 대표 attack_token_index 또는 0번 토큰 사용
+            if atk_idx_a is None:
+                atk_idx_a = getattr(a, "attack_token_index", 0) or 0
             if 0 <= atk_idx_a < len(centers_a):
                 start_a = centers_a[atk_idx_a]
             else:
@@ -996,10 +1196,18 @@ def draw_mutual_arrows(surface, pairs, color):
         else:
             start_a = (a.rect.centerx, a.rect.top - 40)
 
-        # 적 E 시작점
+        # 적 E 시작점: 실제로 A를 노리는 토큰 인덱스를 우선 사용
+        atk_idx_e = None
+        token_plans_e = getattr(e, "token_plans", {})
+        for t_idx, plan in token_plans_e.items():
+            if plan.get("target") is a:
+                atk_idx_e = t_idx
+                break
+
         if hasattr(e, "get_speed_token_centers"):
             centers_e = e.get_speed_token_centers()
-            atk_idx_e = getattr(e, "attack_token_index", 0) or 0
+            if atk_idx_e is None:
+                atk_idx_e = getattr(e, "attack_token_index", 0) or 0
             if 0 <= atk_idx_e < len(centers_e):
                 start_e = centers_e[atk_idx_e]
             else:
@@ -1010,6 +1218,7 @@ def draw_mutual_arrows(surface, pairs, color):
         # 서로에게 가는 양방향 노란 화살표
         draw_drag_arrow(surface, start_a, start_e, color)
         draw_drag_arrow(surface, start_e, start_a, color)
+
 
 
 
@@ -1684,7 +1893,6 @@ def run_battle(screen, stage_code):
                     continue
 
                 # ---- 우클릭 공통: 드래그 취소 우선 ----
-                # ---- 우클릭 공통 ----
                 if event.button == 3:
                     # 1) 카드 드래그(파란 화살표) 중이면, 드래그만 취소
                     if is_dragging_card:
@@ -1780,7 +1988,6 @@ def run_battle(screen, stage_code):
                     # (3) 빈 곳 우클릭은 아무 동작 없음
                     continue
 
-
                 # ---- 좌클릭 ----
                 if event.button == 1:
                     # 카드 드래그 중이면: 적 '토큰(속도 코인)' 클릭 시 타깃 확정
@@ -1790,7 +1997,6 @@ def run_battle(screen, stage_code):
                             if selected_token_index is not None and 0 <= selected_token_index < len(centers_s):
                                 start = centers_s[selected_token_index]
                             else:
-                                # 혹시 인덱스가 비어 있으면 0번 토큰으로 fallback
                                 start = centers_s[0] if centers_s else (selected_unit.rect.centerx,
                                                                         selected_unit.rect.top - 40)
                         else:
@@ -1798,23 +2004,31 @@ def run_battle(screen, stage_code):
 
                         draw_drag_arrow(screen, start, mouse_pos, (80, 160, 255))
 
-                        clicked_enemy = get_unit_at_token(enemy_group, mouse_pos)
+                        # 🔴 여기! 유닛만 가져오던 걸 → (유닛, 토큰 인덱스) 로 가져오게 수정
+                        # 기존:
+                        # clicked_enemy = get_unit_at_token(enemy_group, mouse_pos)
+                        # 변경:
+                        clicked_enemy, clicked_enemy_token_idx = get_token_at_pos(enemy_group, mouse_pos)
 
                         if clicked_enemy is not None:
+                            if clicked_enemy_token_idx is None:
+                                clicked_enemy_token_idx = 0  # 혹시라도 None이면 0번 토큰으로 fallback
+
                             if not hasattr(selected_unit, "token_plans"):
                                 selected_unit.token_plans = {}
+
+                            # 🔹 이 공격이 "적의 몇 번 토큰"을 때리는지 같이 저장
                             selected_unit.token_plans[selected_token_index] = {
                                 "page": selected_card,
                                 "target": clicked_enemy,
+                                "def_token_index": clicked_enemy_token_idx,  # ✅ 새로 추가된 필드
                             }
 
-                            # 🔹 토큰별 '빛 예약' 기록
+                            # 🔹 토큰별 '빛 예약' 기록 (기존 코드 그대로)
                             cost = getattr(selected_card, "cost", 0)
                             if cost > 0:
-                                # per-token 예약
                                 if not hasattr(selected_unit, "light_reserved_per_token"):
                                     selected_unit.light_reserved_per_token = {}
-                                # 혹시 이전에 같은 토큰에 예약이 있었다면 먼저 빼주고 다시 더한다
                                 old = selected_unit.light_reserved_per_token.get(selected_token_index, 0)
                                 total_reserved = getattr(selected_unit, "light_reserved", 0) - old
                                 if total_reserved < 0:
@@ -1823,13 +2037,12 @@ def run_battle(screen, stage_code):
                                 selected_unit.light_reserved_per_token[selected_token_index] = cost
                                 selected_unit.light_reserved = total_reserved + cost
 
-                                # UI 깜빡임 (코스트 수만큼 조금 더 길게 반짝이도록)
                                 selected_unit.light_blink_timer = max(
                                     getattr(selected_unit, "light_blink_timer", 0),
                                     cost * 10
                                 )
 
-                            # 유닛 단위 planned_page/planned_target ...
+                            # 유닛 단위 planned_page/planned_target (합공 로직 호환용)
                             selected_unit.planned_page = selected_card
                             selected_unit.planned_target = clicked_enemy
 
@@ -1837,6 +2050,9 @@ def run_battle(screen, stage_code):
                                 selected_unit.hand.remove(selected_card)
 
                             selected_unit.attack_token_index = selected_token_index
+
+                            # 이하 speed 계산 + update_counter_target_on_attack 부분은 기존 코드 그대로 유지
+                            ...
 
                             # 🔹 이번 공격에 사용한 토큰의 속도를 계산
                             speed_values = getattr(selected_unit, "speed_values", [])
@@ -1846,11 +2062,23 @@ def run_battle(screen, stage_code):
                             else:
                                 atk_speed = getattr(selected_unit, "current_speed", None)
 
-                            # 🔹 합 뺏기 / 합 맞추기 로직 적용
+                            # 🔹 방어 쪽(적)의 "클릭한 코인 속도" 계산
+                            def_speed = None
+                            def_speed_values = getattr(clicked_enemy, "speed_values", [])
+                            if (clicked_enemy_token_idx is not None and
+                                    0 <= clicked_enemy_token_idx < len(def_speed_values)):
+                                # ✅ 여기서 방금 네가 클릭한 적 코인의 속도를 직접 가져옴
+                                def_speed = def_speed_values[clicked_enemy_token_idx]
+                            else:
+                                # 혹시 값이 없으면 원래 로직대로 전체 defense_speed 사용
+                                def_speed = getattr(clicked_enemy, "defense_speed", None)
+
+                            # 🔹 합 뺏기 / 합 맞추기 로직 적용 (이제 방어 토큰 속도까지 넘긴다)
                             update_counter_target_on_attack(
                                 attacker=selected_unit,
                                 defender=clicked_enemy,
                                 atk_speed=atk_speed,
+                                def_speed=def_speed,
                             )
 
                             is_dragging_card = False
