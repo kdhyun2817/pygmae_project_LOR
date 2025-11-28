@@ -1059,7 +1059,18 @@ def draw_hand_cards(surface, font, owner, token_index, selected_unit, mouse_pos)
         surface.blit(name_text, (draw_rect.x + 6, draw_rect.y + 6))
         surface.blit(cost_text, (draw_rect.x + 6, draw_rect.y + 6 + 22))
 
-        # hover 시 약간 확대 효과(있으면)
+        # 🔹 여기서부터: 카드 안에 주사위 요약 텍스트 다시 표시
+        #    예) "참격 3~7", "방어 2~5" 같은 형식
+        dice_lines = build_dice_summary_lines(page)
+        dice_y_start = draw_rect.y + 6 + 22 + 22  # 이름 + 코스트 아래부터 시작
+
+        # 카드 높이가 150이라 너무 꽉 차지 않게 3~4줄 정도만 표시
+        max_lines = 4
+        for i, line in enumerate(dice_lines[:max_lines]):
+            dice_text = small_font.render(line, True, (0, 0, 0))
+            surface.blit(dice_text, (draw_rect.x + 6, dice_y_start + i * 20))
+
+        # hover 시 약간 강조
         if rect.collidepoint(mouse_pos):
             pygame.draw.rect(surface, (255, 255, 0), draw_rect, 3)
 
@@ -1068,7 +1079,15 @@ def draw_hand_cards(surface, font, owner, token_index, selected_unit, mouse_pos)
 
 
 
-def draw_planned_arrows(surface, units, color, mutual_pairs=None):
+
+def draw_planned_arrows(
+    surface,
+    units,
+    color,
+    mutual_pairs=None,
+    highlight_unit=None,
+    highlight_token_index=None,
+):
     """
     token_plans에 기록된 토큰별 공격 계획을 기준으로
     토큰 코인 → 타깃 코인 방향으로 화살표를 그린다.
@@ -1078,6 +1097,10 @@ def draw_planned_arrows(surface, units, color, mutual_pairs=None):
         노란 합공 화살표로 따로 그리게 되므로,
         여기서는 파란/빨간 화살표를 중복해서 그리지 않는다.
       - 같은 유닛의 다른 토큰이 다른 적을 때리는 건 그대로 일방 화살표 유지.
+
+    highlight_unit, highlight_token_index:
+      - 특정 유닛(u)의 특정 토큰(token_idx)이 하이라이트 대상이면
+        그 토큰에서 나가는 화살표만 깜빡이게 한다.
     """
     pair_set = set()
     if mutual_pairs is not None:
@@ -1085,10 +1108,14 @@ def draw_planned_arrows(surface, units, color, mutual_pairs=None):
             pair_set.add((a, e))
             pair_set.add((e, a))  # 양방향 모두 제외
 
+    # 깜빡임 타이머 (약 0.15초 간격으로 on/off)
+    tick = pygame.time.get_ticks()
+    blink_on = ((tick // 150) % 2) == 0
+
     for u in units:
         token_plans = getattr(u, "token_plans", {})
         if not token_plans:
-            # 적처럼 여전히 planned_page만 쓰는 경우를 위해서
+            # 여전히 planned_page만 쓰는 경우를 위해서
             page = getattr(u, "planned_page", None)
             target = getattr(u, "planned_target", None)
             if page is None or target is None:
@@ -1112,14 +1139,12 @@ def draw_planned_arrows(surface, units, color, mutual_pairs=None):
             if (u, target) in pair_set:
                 continue
 
-
             # 시작점: 공격 토큰 코인
             if 0 <= token_idx < len(centers_u):
                 start = centers_u[token_idx]
             else:
                 start = centers_u[0] if centers_u else (u.rect.centerx, u.rect.top - 40)
 
-            # 끝점: 타깃 유닛의 방어 토큰 코인
             # 끝점: 타깃 유닛의 방어 토큰 코인
             if hasattr(target, "get_speed_token_centers"):
                 centers_t = target.get_speed_token_centers()
@@ -1138,10 +1163,26 @@ def draw_planned_arrows(surface, units, color, mutual_pairs=None):
             else:
                 end = (target.rect.centerx, target.rect.top - 40)
 
-            draw_drag_arrow(surface, start, end, color)
+            # 🔹 하이라이트: "해당 유닛 + 해당 토큰"일 때만 깜빡이게
+            arrow_color = color
+            if (
+                highlight_unit is not None
+                and u is highlight_unit
+                and highlight_token_index is not None
+                and token_idx == highlight_token_index
+            ):
+                # blink_on 이 False일 땐 아예 화살표를 안 그림 → 깜빡임 효과
+                if not blink_on:
+                    continue
+                # 켜져 있을 때는 색을 더 밝게
+                r, g, b = color
+                arrow_color = (
+                    min(255, (r + 255) // 2),
+                    min(255, (g + 255) // 2),
+                    min(255, (b + 255) // 2),
+                )
 
-
-
+            draw_drag_arrow(surface, start, end, arrow_color)
 
 
 
@@ -1782,6 +1823,66 @@ def run_battle(screen, stage_code):
         player_coin = font.render(f"코인 +{player_emotion.positive} / -{player_emotion.negative}", True, EMOTION_TEXT)
         surface.blit(player_coin, (px + 10, py + 50))
 
+    def draw_enemy_hover_page_ui(surface, font, hovered_speed_unit, hovered_speed_token_index):
+        """왼쪽 위 감정 단계 아래에, 마우스로 올린 적 속도 토큰의 책장 정보를 간단히 표시한다."""
+        # hover 대상이 없거나 아군이면 표시하지 않음
+        if hovered_speed_unit is None or getattr(hovered_speed_unit, "is_ally", False):
+            return
+
+        enemy = hovered_speed_unit
+        token_idx = hovered_speed_token_index
+
+        # 어떤 토큰에서 어떤 책장을 쓰는지 찾기
+        page = None
+        token_plans = getattr(enemy, "token_plans", {})
+        if isinstance(token_plans, dict) and token_idx is not None:
+            plan = token_plans.get(token_idx)
+            if plan is not None:
+                page = plan.get("page")
+
+        # 🔹 이 토큰에 배정된 책장이 없으면 아무것도 표시하지 않음
+        if page is None:
+            return
+
+        # ------- UI 박스 위치 (왼쪽 위 감정 패널 바로 아래) -------
+        width, height = surface.get_size()
+        emotion_box_w = 180
+        emotion_box_h = 80
+        margin = 10
+        gap = 6
+
+        x = margin
+        y = margin + emotion_box_h + gap
+        box_w = 260
+        box_h = 96
+
+        pygame.draw.rect(surface, EMOTION_BG, (x, y, box_w, box_h), border_radius=8)
+        pygame.draw.rect(surface, EMOTION_BORDER, (x, y, box_w, box_h), 2, border_radius=8)
+
+        title = font.render("적 행동 미리보기", True, EMOTION_TEXT)
+        surface.blit(title, (x + 8, y + 6))
+
+        # 책장 이름
+        name_text = font.render(page.name, True, EMOTION_TEXT)
+        surface.blit(name_text, (x + 8, y + 30))
+
+        # 코스트 + 주사위 요약 (작은 폰트)
+        small_font = pygame.font.SysFont("malgungothic", 18)
+        cost_text = small_font.render(f"코스트 {page.cost}", True, EMOTION_TEXT)
+        surface.blit(cost_text, (x + 8, y + 54))
+
+        # 주사위 간단 요약 1~2줄
+        try:
+            dice_lines = build_dice_summary_lines(page)
+        except Exception:
+            dice_lines = []
+
+        line_y = y + 54
+        for i, line in enumerate(dice_lines[:2]):
+            if i > 0:
+                line_y += 20
+            dice_text = small_font.render(line, True, EMOTION_TEXT)
+            surface.blit(dice_text, (x + 140, line_y))
 
     while running:
         dt = clock.tick(60)
@@ -2166,8 +2267,7 @@ def run_battle(screen, stage_code):
                 hovered_unit = u
                 break
 
-
-        # 2) 속도 코인 기준 hover (카드 보기용)
+        # 2) 속도 코인 기준 hover (카드/미리보기용)
         for u in all_units:
             if hasattr(u, "get_speed_token_centers"):
                 centers = u.get_speed_token_centers()
@@ -2183,6 +2283,12 @@ def run_battle(screen, stage_code):
                     break
             if hovered_speed_unit is not None:
                 break
+
+        enemy_highlight_unit = None
+        enemy_highlight_token_index = None
+        if hovered_speed_unit is not None and not getattr(hovered_speed_unit, "is_ally", False):
+            enemy_highlight_unit = hovered_speed_unit
+            enemy_highlight_token_index = hovered_speed_token_index
 
         # ===== 그리기 시작 =====
         screen.fill((30, 30, 40))
@@ -2208,10 +2314,23 @@ def run_battle(screen, stage_code):
 
         # 파란/빨간 일방 화살표 (합공에 해당하는 쌍은 빼고 그림)
         if show_enemy_arrows:
-            draw_planned_arrows(screen, enemy_group, (255, 80, 80), mutual_pairs=mutual_pairs)
+            draw_planned_arrows(
+                screen,
+                enemy_group,
+                (255, 80, 80),
+                mutual_pairs=mutual_pairs,
+                highlight_unit=enemy_highlight_unit,
+                highlight_token_index=enemy_highlight_token_index,
+            )
 
         if show_ally_arrows:
-            draw_planned_arrows(screen, ally_group, (80, 160, 255), mutual_pairs=mutual_pairs)
+            draw_planned_arrows(
+                screen,
+                ally_group,
+                (80, 160, 255),
+                mutual_pairs=mutual_pairs,
+                highlight_unit=None,  # 아군 화살표는 그대로
+            )
 
         # 3) 카드 드래그 중이면 선택한 '속도 토큰'에서 마우스까지 임시 화살표
         if is_dragging_card and selected_unit is not None and selected_card is not None:
@@ -2231,6 +2350,8 @@ def run_battle(screen, stage_code):
 
         # 5) 감정 UI
         draw_emotion_ui(screen, font, player_emotion, enemy_emotion)
+        # 5-1) 적 토큰 hover 시, 사용 예정 책장 미리보기
+        draw_enemy_hover_page_ui(screen, font, hovered_speed_unit, hovered_speed_token_index)
 
         # 6) 오른쪽 정보 패널
         draw_unit_info_panel(screen, font, hovered_unit)
