@@ -82,7 +82,6 @@ class StatusType(Enum):
     BURN = auto()
     BIND = auto()
     WEAK = auto()
-    DISARM = auto()
     SMOKE = auto()
     CHARGE = auto()
     TARGET = auto()
@@ -94,7 +93,6 @@ class StatusType(Enum):
     LAST_STAND = auto()
     HP_HEAL = auto()   # 자원 계열
     LIGHT = auto()     # 자원 계열
-
 
 
 
@@ -123,8 +121,6 @@ class Unit(pygame.sprite.Sprite):
         sp_resist=None,
 
 
-
-
     ):
         super().__init__()
 
@@ -141,62 +137,16 @@ class Unit(pygame.sprite.Sprite):
         self.is_staggered = False
         self.can_act = True
 
-        # 🔹 속도 관련
-        self.current_speed = None
-        self.defense_speed = None
-        self.speed_values = []
-
-        # 🔹 토큰별 공격 계획: token_index -> {"page": CombatPage, "target": Unit}
-        self.token_plans = {}
-
-        # 🔹 이번 막에 공격에 사용 중인 토큰 인덱스(화살표 시작 위치용)
-        self.attack_token_index = None
-
-        # 🔹 이번 막에 방어에 사용 중인 토큰 인덱스(화살표 끝 위치용)
-        self.defense_token_index = None
-
         # 전투 그룹 참조 (흐트러짐 시 동료에게 효과를 전달하는 기능 등에서 사용)
         self.ally_group = None
         self.enemy_group = None
 
         self.status_effects = []
 
-        # --- 카드(책장) 시스템 ---
-        # deck_all : 이 유닛이 전투 시작 시 가지고 있는 전체 책장 9장
-        # draw_pile: 아직 뽑지 않은 덱 (기본적으로 deck_all 복사본)
-        # hand     : 현재 손에 들고 있는 책장
-        self.deck_all = []
-        self.draw_pile = []
-        self.hand = []
-
-        # 이번 막 동안 이 유닛이 사용한 책장 수 (감정 5단계 추가 드로우 계산용)
-        self.pages_used_this_scene = 0
-
-        # 적 AI용: 이번 막에 사용할 예정인 책장과 타깃
-        self.planned_page = None
-        self.planned_target = None
-
-        # --- 속도 주사위 개수 ---
-        # 기본은 1개, 감정 4단계 이상에서 증가할 수 있다.
-        self.speed_dice_count = 1
-
         # --- 빛 시스템 ---
         # 라오루 기준 기본은 3빛, 감정 1단계에서 +1 → 4빛 되는 구조
         self.max_light = 3
         self.light = 3
-
-        # --- 빛 시스템 ---
-        # 라오루 기준 기본은 3빛, 감정 1단계에서 +1 → 4빛 되는 구조
-        self.max_light = 3
-        self.light = 3
-
-        # --- 빛 예약(플레이 계획용) ---
-        # 여러 토큰이 책장을 예약할 때, 실제로는 나중에 소모되지만
-        # UI 상에서는 미리 빠진 것처럼 보이게 하기 위한 임시 값
-        self.light_reserved = 0  # 예약된 빛 총합
-        self.light_reserved_per_token = {}  # token_index -> cost
-        self.light_blink_timer = 0  # 빛 UI 깜빡임 시간(프레임 카운트)
-
 
         # --- 내성 (HP/SP 분리) ---
         default_resist = {
@@ -221,9 +171,6 @@ class Unit(pygame.sprite.Sprite):
         self.speed_max = speed_max
         self.current_speed = None
 
-
-
-
         # --- 이미지 ---
         if image_path:
             self.image = pygame.image.load(image_path).convert_alpha()
@@ -238,28 +185,7 @@ class Unit(pygame.sprite.Sprite):
     # 속도 굴리기
     # =============================
     def roll_speed(self):
-        """이번 막에서 이 유닛의 속도 주사위를 모두 굴린다.
-
-        - self.speed_dice_count 개수만큼 speed_values 리스트에 저장
-        - current_speed : 공격에 사용하는 '메인' 속도 (가장 높은 값)
-        - defense_speed : 공격을 받을 때 기준이 되는 속도 (가장 낮은 값)
-        """
-        # speed_values 초기화 보장
-        if getattr(self, "speed_values", None) is None:
-            self.speed_values = []
-
-        # 이미 굴려진 상태면 다시 굴리지 않는다.
-        if self.current_speed is not None:
-            return
-
-        # 행동 불가 / 사망 / 도주 상태면 속도 0 취급
-        if not self.can_act or self.is_dead or self.is_escaped:
-            self.current_speed = None
-            self.defense_speed = None
-            self.speed_values = []
-            return
-
-        # 가속 / 속도저하 상태이상 반영
+        # --- 신속 / 속박 상태이상 적용 ---
         speed_bonus = 0
         for st in self.status_effects:
             if st.type == StatusType.HASTE:
@@ -267,46 +193,15 @@ class Unit(pygame.sprite.Sprite):
             if st.type == StatusType.BIND:
                 speed_bonus -= st.stacks
 
-        # 실제 주사위 굴리기
-        self.speed_values = []
-        dice_count = max(1, int(getattr(self, "speed_dice_count", 1)))
-        for _ in range(dice_count):
-            base = random.randint(self.speed_min, self.speed_max)
-            val = max(1, base + speed_bonus)
-            self.speed_values.append(val)
-
-        if self.speed_values:
-            # 🔹 공격용 메인 토큰 속도 (가장 높은 속도)
-            self.current_speed = max(self.speed_values)
-            # 🔹 방어용 토큰 속도 (가장 낮은 속도)
-            self.defense_speed = min(self.speed_values)
-            # 🔹 기본 공격/방어 토큰 인덱스도 같이 지정
-            try:
-                self.attack_token_index = self.speed_values.index(self.current_speed)
-            except ValueError:
-                self.attack_token_index = None
-            try:
-                self.defense_token_index = self.speed_values.index(self.defense_speed)
-            except ValueError:
-                self.defense_token_index = None
-        else:
+        if self.current_speed is not None:
+            return
+        if not self.can_act or self.is_dead or self.is_escaped:
             self.current_speed = None
-            self.defense_speed = None
-            self.attack_token_index = None
-            self.defense_token_index = None
+        else:
+            self.current_speed = random.randint(self.speed_min, self.speed_max)
 
-    def reset_speed_for_new_turn(self):
-        self.current_speed = None
-        self.defense_speed = None
-        self.speed_values = []
-        self.attack_token_index = None
-        self.defense_token_index = None
-        self.token_plans = {}
+        self.current_speed = max(1, self.current_speed + speed_bonus)
 
-        # 새 막 시작할 때 빛 예약도 초기화
-        self.light_reserved = 0
-        self.light_reserved_per_token = {}
-        self.light_blink_timer = 0
 
     # =============================
     # 상태이상 리스트
@@ -360,46 +255,6 @@ class Unit(pygame.sprite.Sprite):
 
 
     # =============================
-    # 카드(책장) 관련 메서드
-    # =============================
-    def set_deck(self, pages):
-        """
-        이 유닛의 덱을 설정한다.
-        pages: CombatPage 객체 9개(같은 페이지 여러 번 들어가도 됨).
-        """
-        # 전체 덱(정보용)과 실제 뽑기용 덱을 분리
-        self.deck_all = list(pages)
-        self.draw_pile = list(pages)
-        self.hand = []
-
-    def draw_cards(self, count: int):
-        """
-        덱에서 count장 만큼 뽑아 손패에 넣는다.
-
-        - draw_pile이 비면 deck_all을 기준으로 다시 리필한다.
-          (보유하고 있던 책장을 모두 소모하면 같은 구성을 다시 한 번 쓰는 느낌)
-        - draw_pile과 deck_all이 모두 비어 있으면 더 이상 뽑지 않는다.
-        """
-        import random
-
-        for _ in range(count):
-            # 남은 덱이 없으면 한 번 리필 시도
-            if not self.draw_pile:
-                if self.deck_all:
-                    # 원래 가지고 있던 책장 구성으로 다시 채움
-                    self.draw_pile = list(self.deck_all)
-                else:
-                    # 애초에 덱이 없다면 더 이상 뽑을 수 없음
-                    break
-
-            if not self.draw_pile:
-                break
-
-            page = random.choice(self.draw_pile)
-            self.draw_pile.remove(page)
-            self.hand.append(page)
-
-    # =============================
     # 데미지 처리
     # =============================
     def take_damage(self, amount, damage_type):
@@ -418,15 +273,14 @@ class Unit(pygame.sprite.Sprite):
         hp_damage = amount * hp_mult
         sp_damage = amount * sp_mult
 
-        # 2. 취약/FRAGILE/VULNERABLE
-        vuln_bonus = 0
+        # 2. 취약(FRAGILE)
+        fragile_bonus = 0
         for st in self.status_effects:
-            if st.type in (StatusType.FRAGILE, StatusType.VULNERABLE):
-                vuln_bonus += st.stacks
-
-        if vuln_bonus > 0:
-            hp_damage *= (1 + vuln_bonus)
-            sp_damage *= (1 + vuln_bonus)
+            if st.type == StatusType.FRAGILE:
+                fragile_bonus += st.stacks
+        if fragile_bonus > 0:
+            hp_damage *= (1 + fragile_bonus)
+            sp_damage *= (1 + fragile_bonus)
 
         # 3. 표적 / 연기 / 부식 같은 "피해 증폭" 상태이상들
         # --- 표적(Target): +50%
@@ -623,69 +477,34 @@ class Unit(pygame.sprite.Sprite):
     # =============================
     # UI 관련
     # =============================
-    # =============================
-    # UI 관련
-    # =============================
-    def get_speed_token_centers(self):
-        """이 유닛의 속도 토큰(코인) 중심 좌표들을 반환한다."""
-        n = max(1, int(getattr(self, "speed_dice_count", 1)))
-        radius = 28
-        centers = []
-        # 가운데 기준으로 좌우로 배치
-        for i in range(n):
-            offset = (i - (n - 1) / 2.0) * (radius * 2 + 8)
-            cx = self.rect.centerx + offset
-            cy = self.rect.top - 40
-            centers.append((cx, cy))
-        return centers
-
     def draw_speed_token(self, surface, font):
-        """속도 토큰(여러 개일 수 있음)을 그린다."""
-        centers = self.get_speed_token_centers()
+        cx = self.rect.centerx
+        cy = self.rect.top - 40
+
         radius = 28
+        hex_points = []
+        for i in range(6):
+            ang = math.radians(60 * i - 30)
+            x = cx + radius * math.cos(ang)
+            y = cy + radius * math.sin(ang)
+            hex_points.append((x, y))
 
-        # 표시 텍스트를 위해 미리 상태 플래그 확인
+        pygame.draw.polygon(surface, TOKEN_COLOR, hex_points)
+        pygame.draw.polygon(surface, TOKEN_BORDER, hex_points, 3)
+
         if self.is_dead:
-            base_state_text = "사망"
+            text = "사망"
         elif self.is_escaped:
-            base_state_text = "도주"
+            text = "도주"
         elif self.is_staggered:
-            base_state_text = "흐트러짐!"
+            text = "흐트러짐!"
+        elif self.current_speed is None:
+            text = f"{self.speed_min}-{self.speed_max}"
         else:
-            base_state_text = None
+            text = str(self.current_speed)
 
-        # 아직 속도를 안 굴렸으면 범위만 표시
-        if base_state_text is None:
-            if not getattr(self, "speed_values", None):
-                base_text = f"{self.speed_min}-{self.speed_max}"
-                texts = [base_text for _ in centers]
-            else:
-                # 굴려진 경우 각 토큰마다 실제 속도 표시
-                texts = []
-                for i in range(len(centers)):
-                    if i < len(self.speed_values):
-                        texts.append(str(self.speed_values[i]))
-                    else:
-                        texts.append(f"{self.speed_min}-{self.speed_max}")
-        else:
-            # 사망/도주/흐트러짐이면 모든 토큰에 같은 텍스트
-            texts = [base_state_text for _ in centers]
-
-        # 실제 그리기
-        for idx, (cx, cy) in enumerate(centers):
-            hex_points = []
-            for k in range(6):
-                ang = math.radians(60 * k - 30)
-                x = cx + radius * math.cos(ang)
-                y = cy + radius * math.sin(ang)
-                hex_points.append((x, y))
-
-            pygame.draw.polygon(surface, TOKEN_COLOR, hex_points)
-            pygame.draw.polygon(surface, TOKEN_BORDER, hex_points, 3)
-
-            token_text = texts[idx]
-            surf = font.render(token_text, True, (0, 0, 0))
-            surface.blit(surf, surf.get_rect(center=(cx, cy)))
+        surf = font.render(text, True, BLACK)
+        surface.blit(surf, surf.get_rect(center=(cx, cy)))
 
     def draw_hp_sp_bar(self, surface):
         bar_width = 80
@@ -710,52 +529,31 @@ class Unit(pygame.sprite.Sprite):
         if self.max_light <= 0:
             return
 
-        spacing = 16
-        size = 4
+        # 마름모들 간 간격과 크기
+        spacing = 16   # 마름모 사이 간격
+        size = 4       # 마름모 한 변의 '반' 길이
 
+        # 전체 너비 계산해 가운데 정렬
         total_width = (self.max_light - 1) * spacing
         start_x = self.rect.centerx - total_width / 2
+
+        # 위치: 캐릭터 머리 조금 위 (속도 토큰보다 약간 아래/위는 취향대로)
         y = self.rect.top - 12
-
-        # 🔹 실제 논리상의 빛(self.light)은 건들지 않고,
-        #     '예약된 빛(light_reserved)'만큼 UI에서 미리 빠진 것처럼 보이게 한다.
-        reserved = getattr(self, "light_reserved", 0)
-        effective_light = max(0, self.light - reserved)
-
-        # 🔹 깜빡임: 예약이 갓 생겼을 때 일정 시간 동안 반짝이게
-        # 🔹 깜빡임: 예약된 빛이 있는 동안 계속 반짝이게
-        blink_on = False
-        if reserved > 0:
-            # pygame 전체 시간 기준으로 on/off (약 0.2초 주기)
-            ticks = pygame.time.get_ticks()
-            if (ticks // 200) % 2 == 0:
-                blink_on = True
-
-        # 몇 개가 예약되어 있는지 (빈 칸 중 깜빡일 개수)
-        reserved_count = int(reserved)
 
         for i in range(self.max_light):
             cx = start_x + i * spacing
             points = [
-                (cx, y - size),
-                (cx + size, y),
-                (cx, y + size),
-                (cx - size, y),
+                (cx, y - size),       # 위
+                (cx + size, y),       # 오른쪽
+                (cx, y + size),       # 아래
+                (cx - size, y),       # 왼쪽
             ]
 
-            if i < int(effective_light):
-                # 실제 사용 가능한 빛 부분
+            # 현재 빛 개수만큼은 채운 색, 나머지는 빈 색
+            if i < int(self.light):
                 fill_color = LIGHT_FULL_COLOR
             else:
-                # 여기부터는 빈 칸
                 fill_color = LIGHT_EMPTY_COLOR
-
-                # 빈 칸 중에서 '예약된 빛' 만큼은 깜빡이게
-                # 예: effective_light = 2, reserved = 1 → i == 2인 칸이 깜빡
-                if (blink_on and
-                        i >= int(effective_light) and
-                        i < int(effective_light) + reserved_count):
-                    fill_color = (255, 255, 200)  # 조금 더 밝게 반짝
 
             pygame.draw.polygon(surface, fill_color, points)
             pygame.draw.polygon(surface, LIGHT_BORDER_COLOR, points, 1)

@@ -2,27 +2,22 @@
 import csv
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
-from enum import Enum, auto
+from enum import Enum
 
 from unit import DamageType, DiceKind, StatusType
 
 
 class EffectTiming(Enum):
     ON_USE = "ON_USE"
-    ON_BATTLE_START = "ON_BATTLE_START"
 
 
 class EffectTrigger(Enum):
-    NONE = auto()
-    ON_HIT = auto()
-    ON_BE_HIT = auto()
-    ON_CLASH_WIN = auto()
-    ON_CLASH_LOSS = auto()
-    ON_DEFEND = auto()
-    ON_DODGE = auto()
-    ON_ROLL = auto()
-
-
+    NONE = "NONE"
+    ON_HIT = "ON_HIT"
+    ON_CLASH_WIN = "ON_CLASH_WIN"
+    ON_CLASH_LOSS = "ON_CLASH_LOSS"
+    ON_BE_HIT = "ON_BE_HIT"
+    ON_DEFEND = "ON_DEFEND"
 
 
 class EffectTarget(Enum):
