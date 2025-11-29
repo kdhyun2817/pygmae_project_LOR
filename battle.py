@@ -133,10 +133,6 @@ def start_scene(scene_index, all_units):
             if u.light > u.max_light:
                 u.light = u.max_light
 
-        # 여기서 흐트러짐 회복 / 빛 +1 / 속도 리셋 등 기존 로직 계속...
-        u.reset_speed_for_new_turn()
-        # etc...
-
         # 빛 1개 획득
         if hasattr(u, "gain_light"):
             u.gain_light(1)
@@ -151,10 +147,6 @@ def start_scene(scene_index, all_units):
                 u.stagger_recover_scenes -= 1
                 if u.stagger_recover_scenes <= 0 and hasattr(u, "recover_stagger_next_scene"):
                     u.recover_stagger_next_scene()
-
-        # 속도 주사위 리셋 (다음에 SPACE로 다시 굴릴 수 있게)
-        if hasattr(u, "reset_speed_for_new_turn"):
-            u.reset_speed_for_new_turn()
 
         # 이번 막 시작 시 속도/책장 사용 횟수 초기화
         if hasattr(u, "pages_used_this_scene"):
@@ -347,44 +339,44 @@ def apply_dice_trigger(dice: Dice, user, target, trigger_type):
 
 
 
-def use_page(page: CombatPage, user, allies, enemies):
-    # 코스트 체크
-    if not user.spend_light(page.cost):
-        print("빛 부족:", page.name)
-        return
-
-    # 사용 효과
-    if page.use_effect:
-        t = page.use_effect.target
-        if t == EffectTarget.SELF:
-            apply_effect(page.use_effect, user, user)
-        elif t == EffectTarget.ALLY_ALL:
-            for a in allies:
-                apply_effect(page.use_effect, user, a)
-        # 필요하면 ENEMY_ALL 등 추가
-
-    # 주사위 생성해서 실제 공격 (간단 버전)
-    dice_objs = []
-    for spec in page.dice_list:
-        d = Dice(
-            owner=user,
-            kind=spec.kind,
-            min_value=spec.min_value,
-            max_value=spec.max_value,
-            damage_type=spec.damage_type,
-        )
-        # spec.effect는 나중에 on_hit / on_clash_win에서 쓰면 됨
-        dice_objs.append((d, spec.effect))
-
-    # 일단 테스트용으로 첫 적에게 그냥 공격
-    target = next(e for e in enemies if not e.is_dead and not e.is_escaped)
-    for d, eff in dice_objs:
-        val = d.roll()
-        if d.kind == DiceKind.ATTACK:
-            dmg_type = d.damage_type or DamageType.SLASH
-            target.take_damage(val, dmg_type)
-            print(f"{page.name} 공격 주사위 {val} → 적 HP {target.hp:.1f}")
-            # 추후: ON_HIT 효과 여기서 eff.trigger == EffectTrigger.ON_HIT이면 적용
+# def use_page(page: CombatPage, user, allies, enemies):
+#     # 코스트 체크
+#     if not user.spend_light(page.cost):
+#         print("빛 부족:", page.name)
+#         return
+#
+#     # 사용 효과
+#     if page.use_effect:
+#         t = page.use_effect.target
+#         if t == EffectTarget.SELF:
+#             apply_effect(page.use_effect, user, user)
+#         elif t == EffectTarget.ALLY_ALL:
+#             for a in allies:
+#                 apply_effect(page.use_effect, user, a)
+#         # 필요하면 ENEMY_ALL 등 추가
+#
+#     # 주사위 생성해서 실제 공격 (간단 버전)
+#     dice_objs = []
+#     for spec in page.dice_list:
+#         d = Dice(
+#             owner=user,
+#             kind=spec.kind,
+#             min_value=spec.min_value,
+#             max_value=spec.max_value,
+#             damage_type=spec.damage_type,
+#         )
+#         # spec.effect는 나중에 on_hit / on_clash_win에서 쓰면 됨
+#         dice_objs.append((d, spec.effect))
+#
+#     # 일단 테스트용으로 첫 적에게 그냥 공격
+#     target = next(e for e in enemies if not e.is_dead and not e.is_escaped)
+#     for d, eff in dice_objs:
+#         val = d.roll()
+#         if d.kind == DiceKind.ATTACK:
+#             dmg_type = d.damage_type or DamageType.SLASH
+#             target.take_damage(val, dmg_type)
+#             print(f"{page.name} 공격 주사위 {val} → 적 HP {target.hp:.1f}")
+#             # 추후: ON_HIT 효과 여기서 eff.trigger == EffectTrigger.ON_HIT이면 적용
 
 
 def build_dice_summary_lines(page: CombatPage):
@@ -516,13 +508,13 @@ def award_emotion_for_hit(attacker, defender, damage_amount, is_kill=False):
 
 
 
-def create_ally_units():
+def create_ally_units(width, height):
     """아군 유닛 3명 생성 (오른쪽 '<' 모양)"""
     ally_group = pygame.sprite.Group()
     ally_positions = [
-        (700, 430),  # 가운데(전방)
-        (760, 380),  # 오른쪽 위
-        (760, 480),  # 오른쪽 아래
+        (width - 260, int(height * 0.60)),
+        (width - 200, int(height * 0.40)),
+        (width - 200, int(height * 0.80)),
     ]
 
     for idx, (x, y) in enumerate(ally_positions):
@@ -536,7 +528,7 @@ def create_ally_units():
             DamageType.PIERCE: ResistLevel.NORMAL,
             DamageType.BLUNT: ResistLevel.NORMAL,
         }
-        u = Unit(x, y, 2, 5, True, None, 1000, 100, hp_res, sp_res)
+        u = Unit(x, y, 2, 5, True, None, 1000, 1, hp_res, sp_res)
 
         u.speed_dice_count = 1
 
@@ -1003,13 +995,6 @@ def get_token_at_pos(all_units, pos):
     return None, None
 
 
-def get_unit_at_token(all_units, pos):
-    """
-    기존 인터페이스 유지용: unit만 필요할 때 사용.
-    """
-    u, _ = get_token_at_pos(all_units, pos)
-    return u
-
 
 
 def get_hand_owner(selected_unit, selected_token_index,
@@ -1422,6 +1407,7 @@ def draw_focus_step(
     # 1) 유닛 + HP/SP/속도 토큰
     for u in all_units:
         u.draw(screen, font)
+
 
     # 2) 화살표
     mutual_pairs = find_mutual_target_pairs(ally_group, enemy_group)
@@ -1955,25 +1941,33 @@ def resolve_one_sided_sequence(attacker, defender):
 
 
 
-def execute_scene_actions(
-    screen,
-    font,
-    all_units,
-    ally_group,
-    enemy_group,
-    show_enemy_arrows=True,
-    show_ally_arrows=True,
-    show_mutual_arrows=True,
-):
+def execute_scene_actions(all_units, ally_group, enemy_group):
     """
-    이번 막에서 모든 planned_page / planned_target을
-    속도 순서대로 처리하고, 막을 종료하기 전까지의 전투 연출을 담당한다.
-    🔹 주목 모드: 각 액션(합공/일방공) 내부에서 한 주사위씩
-       draw_focus_step을 호출해 화면에 보여준다.
+    (기존처럼) 이번 막에서 모든 planned_page / planned_target을
+    속도 순서대로 '즉시' 처리하는 버전.
+    → 디버그 / 빠른 테스트용으로 남겨둔다.
     """
+    actions = build_scene_actions(all_units, ally_group, enemy_group)
 
-    clear_focus_info()
+    for kind, _, a, b in actions:
+        if not is_unit_alive_and_present(a) or not is_unit_alive_and_present(b):
+            continue
+        if kind == "clash":
+            resolve_clash_between_units(a, b)
+        elif kind == "one_sided":
+            resolve_one_sided_sequence(a, b)
 
+
+def build_scene_actions(all_units, ally_group, enemy_group):
+    """
+    이번 막에서 처리해야 할 행동(합공 / 일방 공격)을
+    속도 순서대로 정렬한 리스트로 만들어 돌려준다.
+
+    반환값:
+      actions = [(kind, speed, attacker, defender), ...]
+        kind: "clash" 또는 "one_sided"
+        speed: 정렬용 속도값 (내림차순으로 처리)
+    """
     # 1) 합공 쌍 찾기
     mutual_pairs = find_mutual_target_pairs(ally_group, enemy_group)
     units_in_pairs = set()
@@ -1981,11 +1975,11 @@ def execute_scene_actions(
         units_in_pairs.add(a)
         units_in_pairs.add(e)
 
-    # 2) 액션 리스트 구성
     actions = []
 
-    # 합공 액션들
+    # 2) 합공 액션들
     for a, e in mutual_pairs:
+        # 양쪽의 '실제로 공격에 사용하는 토큰' 속도를 기준으로 정렬용 속도 결정
         sv_a = getattr(a, "speed_values", [])
         idx_a = getattr(a, "attack_token_index", None)
         if idx_a is not None and 0 <= idx_a < len(sv_a):
@@ -2003,7 +1997,7 @@ def execute_scene_actions(
         effective_speed = max(spd_a, spd_e)
         actions.append(("clash", effective_speed, a, e))
 
-    # 합공에 포함되지 않은 유닛들의 일방 공격
+    # 3) 합공에 포함되지 않은 유닛들의 일방 공격
     for u in all_units:
         if u in units_in_pairs:
             continue
@@ -2023,28 +2017,12 @@ def execute_scene_actions(
             spd = sv_u[idx_u]
         else:
             spd = getattr(u, "current_speed", 0) or 0
+
         actions.append(("one_sided", spd, u, target))
 
-    # 3) 속도 내림차순 정렬 (빠른 순서대로 처리)
+    # 4) 속도 내림차순 정렬 (빠른 순서대로 처리)
     actions.sort(key=lambda x: x[1], reverse=True)
-
-    # 4) 실제 처리
-    for kind, spd, a, b in actions:
-        if not is_unit_alive_and_present(a):
-            continue
-        if not is_unit_alive_and_present(b):
-            continue
-
-        if kind == "clash":
-            resolve_clash_between_units(
-                a, b,
-
-            )
-        elif kind == "one_sided":
-            resolve_one_sided_sequence(
-                a, b,
-            )
-
+    return actions
 
 
 
@@ -2078,7 +2056,8 @@ def run_battle(screen, stage_code):
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("malgungothic", 22)
 
-    ally_group = create_ally_units()
+    w, h = screen.get_size()
+    ally_group = create_ally_units(w, h)
     enemy_group = create_enemies_from_stage(stage_code)
     all_units = pygame.sprite.Group()
     all_units.add(ally_group)
@@ -2092,12 +2071,32 @@ def run_battle(screen, stage_code):
         e.ally_group = enemy_group
         e.enemy_group = ally_group
 
+    for u in all_units:
+        cx, cy = u.rect.center
+        u.home_pos = (float(cx), float(cy))
+        u.current_pos = [float(cx), float(cy)]  # 그릴 때는 이 값을 rect에 반영할 것
+
     #  전투 시작 시 각 유닛에게 책장 9장 배정 + 손패 3장
     init_decks_for_units(ally_group, enemy_group)
 
-    scene_index = 1  # 현재 막 번호
-    scene_started = False  # 막이 시작됐는지 여부
-    speed_rolled = False  # ✅ 이번 막에서 속도를 이미 굴렸는지 여부
+    scene_index = 1
+    scene_started = False
+    speed_rolled = False
+
+    # 🔹 전투 연출(애니메이션) 상태
+    anim_state = {
+        "mode": False,  # True면 연출 모드 진행 중
+        "actions": [],  # build_scene_actions 로 만든 리스트
+        "index": 0,  # 현재 처리 중인 action 인덱스
+        "phase": "idle",  # "idle" / "approach" / "dice" / "hold" / "return"
+        "timer": 0.0,  # 현재 phase에서 경과한 시간(ms)
+        "current_kind": None,  # "clash" / "one_sided"
+        "attacker": None,
+        "defender": None,
+        "resolved": False,  # 이 action에 대해 실제 데미지 처리가 끝났는지
+        "return_timer": 0.0,
+        "finished": False,  # True면 이번 막 연출이 모두 끝났다는 뜻
+    }
 
     show_enemy_arrows = True  # 1번 키로 토글하는 표시 여부
     show_ally_arrows = True  # ✅ 2번 키: 아군(파란) 화살표 표시 여부
@@ -2111,9 +2110,6 @@ def run_battle(screen, stage_code):
 
     # 🔹 현재 선택된 아군의 몇 번째 속도 토큰을 쓰는지
     selected_token_index = None
-
-    player_emotion = BattleEmotionSystem(is_player_side=True)
-    enemy_emotion = BattleEmotionSystem(is_player_side=False)
 
     running = True
     result = None  # 전투 결과
@@ -2315,6 +2311,203 @@ def run_battle(screen, stage_code):
         if page is None:
             return
 
+    # --- 전투 연출 업데이트 함수 ---
+    def start_battle_animation(actions):
+        """두 번째 스페이스바 입력 시, 이번 막 actions를 가지고 연출 모드를 시작."""
+        anim_state["mode"] = True
+        anim_state["actions"] = actions
+        anim_state["index"] = 0
+        anim_state["phase"] = "approach"
+        anim_state["timer"] = 0.0
+        anim_state["current_kind"] = None
+        anim_state["attacker"] = None
+        anim_state["defender"] = None
+        anim_state["resolved"] = False
+        anim_state["return_timer"] = 0.0
+        anim_state["finished"] = False
+
+    def update_battle_animation(dt):
+        """
+        연출 모드에서만 호출.
+        dt: 밀리초(ms)
+        한 번에 하나의 action(합공 or 일방)에 대해
+        - 접근(approach)
+        - 주사위/피해 처리(dice)
+        - 잠시 유지(hold)
+        순서로 진행하고,
+        모든 action이 끝나면 전체 귀환(return) 연출을 한다.
+        """
+
+        nonlocal scene_index, scene_started, speed_rolled
+        nonlocal selected_unit, selected_card, is_dragging_card
+
+        if not anim_state["mode"]:
+            return
+
+        # 행동 리스트가 비었으면 곧바로 귀환 연출로
+        if not anim_state["actions"]:
+            anim_state["mode"] = False
+            anim_state["finished"] = True
+            return
+
+        # 상수: 각 phase 시간 (ms)
+        APPROACH_TIME = 300
+        DICE_TIME = 200   # 여기서 실제 피해 처리
+        HOLD_TIME = 200
+        RETURN_TIME = 400
+
+        # 아직 귀환 phase 전에, 개별 action들을 처리하는 부분
+        if anim_state["phase"] in ("idle", "approach", "dice", "hold"):
+            # 현재 action이 없거나 인덱스가 넘어가면 → 귀환 phase로 전환
+            if anim_state["index"] >= len(anim_state["actions"]):
+                anim_state["phase"] = "return"
+                anim_state["return_timer"] = 0.0
+                return
+
+            kind, speed, a, b = anim_state["actions"][anim_state["index"]]
+
+            # 현재 action 캐시
+            anim_state["current_kind"] = kind
+            anim_state["attacker"] = a
+            anim_state["defender"] = b
+
+            # phase 경과 시간 증가
+            anim_state["timer"] += dt
+
+            # 1) approach: 빠른 쪽/공격자가 앞으로 이동
+            if anim_state["phase"] == "approach":
+                t = min(anim_state["timer"] / APPROACH_TIME, 1.0)
+
+                if kind == "clash":
+                    # 합공: 더 빠른 쪽이 느린 쪽 앞으로 이동
+                    u1, u2 = a, b
+
+                    # 각자의 공격 토큰 속도로 속도 비교
+                    def get_token_speed(u):
+                        sv = getattr(u, "speed_values", [])
+                        idx = getattr(u, "attack_token_index", None)
+                        if idx is not None and 0 <= idx < len(sv):
+                            return sv[idx]
+                        return getattr(u, "current_speed", 0) or 0
+
+                    spd1 = get_token_speed(u1)
+                    spd2 = get_token_speed(u2)
+
+                    if spd1 >= spd2:
+                        fast, slow = u1, u2
+                    else:
+                        fast, slow = u2, u1
+
+                    # 느린 쪽은 제자리, 빠른 쪽이 앞으로
+                    sx, sy = slow.current_pos
+                    fx0, fy0 = fast.current_pos
+
+                    # slow → fast 방향 벡터
+                    dir_x = sx - fx0
+                    dir_y = sy - fy0
+                    length = max((dir_x ** 2 + dir_y ** 2) ** 0.5, 1.0)
+                    dir_x /= length
+                    dir_y /= length
+
+                    # 느린 쪽 바로 앞까지 가도록 offset (약간 떨어진 거리)
+                    OFFSET = 60
+                    target_x = sx - dir_x * OFFSET
+                    target_y = sy - dir_y * OFFSET
+
+                    # 선형 보간으로 fast를 이동
+                    fast.current_pos[0] = fx0 + (target_x - fx0) * t
+                    fast.current_pos[1] = fy0 + (target_y - fy0) * t
+                    # slow는 그대로 둠
+
+                else:
+                    # 일방공: 공격자가 피격자 앞으로 이동
+                    attacker, defender = a, b
+                    dx0, dy0 = defender.current_pos
+                    ax0, ay0 = attacker.current_pos
+
+                    dir_x = dx0 - ax0
+                    dir_y = dy0 - ay0
+                    length = max((dir_x ** 2 + dir_y ** 2) ** 0.5, 1.0)
+                    dir_x /= length
+                    dir_y /= length
+
+                    OFFSET = 60
+                    target_x = dx0 - dir_x * OFFSET
+                    target_y = dy0 - dir_y * OFFSET
+
+                    attacker.current_pos[0] = ax0 + (target_x - ax0) * t
+                    attacker.current_pos[1] = ay0 + (target_y - ay0) * t
+
+                # approach 시간이 끝나면 dice phase로
+                if anim_state["timer"] >= APPROACH_TIME:
+                    anim_state["phase"] = "dice"
+                    anim_state["timer"] = 0.0
+                    anim_state["resolved"] = False
+                return
+
+            # 2) dice phase: 실제 전투 처리 + 간단한 표시
+            if anim_state["phase"] == "dice":
+                if not anim_state["resolved"]:
+                    # 🔹 여기서 실제 전투 로직 실행 (피해 계산, 감정코인 등)
+                    if kind == "clash":
+                        resolve_clash_between_units(a, b)
+                    else:
+                        resolve_one_sided_sequence(a, b)
+
+                    anim_state["resolved"] = True
+
+                if anim_state["timer"] >= DICE_TIME:
+                    anim_state["phase"] = "hold"
+                    anim_state["timer"] = 0.0
+                return
+
+            # 3) hold phase: 잠깐 화면에 결과를 보여주는 시간
+            if anim_state["phase"] == "hold":
+                if anim_state["timer"] >= HOLD_TIME:
+                    # 다음 action으로 넘어감
+                    anim_state["index"] += 1
+                    anim_state["phase"] = "approach"
+                    anim_state["timer"] = 0.0
+                    anim_state["resolved"] = False
+                return
+
+        # 4) 모든 action 처리 후: 전체 귀환(return) 연출
+        if anim_state["phase"] == "return":
+            anim_state["return_timer"] += dt
+            t = min(anim_state["return_timer"] / RETURN_TIME, 1.0)
+
+            for u in all_units:
+                if hasattr(u, "home_pos") and hasattr(u, "current_pos"):
+                    hx, hy = u.home_pos
+                    cx, cy = u.current_pos
+                    # cx, cy에서 hx, hy로 lerp
+                    u.current_pos[0] = cx + (hx - cx) * t
+                    u.current_pos[1] = cy + (hy - cy) * t
+
+            if anim_state["return_timer"] >= RETURN_TIME:
+                # 모든 유닛 정확히 제자리로 고정
+                for u in all_units:
+                    if hasattr(u, "home_pos"):
+                        hx, hy = u.home_pos
+                        u.current_pos = [hx, hy]
+                        u.rect.centerx = int(hx)
+                        u.rect.centery = int(hy)
+
+                # 연출 모드 종료
+                anim_state["mode"] = False
+                anim_state["finished"] = False  # 이제 SPACE로 처리 안 할 거라 False로
+
+                # ✅ 막 종료 처리 + 다음 막 준비까지 여기에서 바로 해버리기
+                end_scene(all_units)
+
+                scene_index += 1
+                scene_started = False  # 다음 루프에서 start_scene()이 다시 호출됨
+                speed_rolled = False
+
+                selected_unit = None
+                selected_card = None
+                is_dragging_card = False
+
     def render_focus_scene():
         """
         주사위 연출용으로 화면을 간단히 다시 그리는 함수.
@@ -2332,34 +2525,62 @@ def run_battle(screen, stage_code):
 
         # 1) 유닛들 먼저 그리기
         for u in all_units:
-            u.update()
-            u.draw(screen, font)
+            # current_pos 기준으로 rect 위치를 갱신
+            if hasattr(u, "current_pos"):
+                u.rect.centerx = int(u.current_pos[0])
+                u.rect.centery = int(u.current_pos[1])
+            u.draw(screen, font, show_speed_token=not anim_state["mode"])
+
+        # 🔹 연출 모드일 때: 전체를 어둡게 덮고, 현재 action의 두 유닛만 위에 다시 그린다.
+        if anim_state["mode"]:
+            # 전체 화면을 반투명 검은색으로 덮어 디밍 효과
+            overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 150))  # 마지막 값이 알파(0~255)
+            screen.blit(overlay, (0, 0))
+
+            a = anim_state["attacker"]
+            b = anim_state["defender"]
+            focus_units = []
+            if a is not None:
+                focus_units.append(a)
+            if b is not None and b is not a:
+                focus_units.append(b)
+
+            for u in focus_units:
+                if hasattr(u, "current_pos"):
+                    u.rect.centerx = int(u.current_pos[0])
+                    u.rect.centery = int(u.current_pos[1])
+                u.draw(screen, font, show_speed_token=not anim_state["mode"])
 
         # 2) 화살표 (합공 + 일방)
-        mutual_pairs = find_mutual_target_pairs(ally_group, enemy_group)
+        #   - 연출 모드가 아닐 때만 화살표를 그린다.
+        mutual_pairs = []
 
-        if show_mutual_arrows:
-            draw_mutual_arrows(screen, mutual_pairs, (255, 230, 80))
+        if not anim_state["mode"]:
+            mutual_pairs = find_mutual_target_pairs(ally_group, enemy_group)
 
-        if show_enemy_arrows:
-            draw_planned_arrows(
-                screen,
-                enemy_group,
-                (255, 80, 80),
-                mutual_pairs=mutual_pairs,
-                highlight_unit=None,
-                highlight_token_index=None,
-            )
+            if show_mutual_arrows:
+                draw_mutual_arrows(screen, mutual_pairs, (255, 230, 80))
 
-        if show_ally_arrows:
-            draw_planned_arrows(
-                screen,
-                ally_group,
-                (80, 160, 255),
-                mutual_pairs=mutual_pairs,
-                highlight_unit=None,
-                highlight_token_index=None,
-            )
+            if show_enemy_arrows:
+                draw_planned_arrows(
+                    screen,
+                    enemy_group,
+                    (255, 80, 80),
+                    mutual_pairs=mutual_pairs,
+                    highlight_unit=None,
+                    highlight_token_index=None,
+                )
+
+            if show_ally_arrows:
+                draw_planned_arrows(
+                    screen,
+                    ally_group,
+                    (80, 160, 255),
+                    mutual_pairs=mutual_pairs,
+                    highlight_unit=None,
+                    highlight_token_index=None,
+                )
 
         # 3) 감정 UI
         draw_emotion_ui(screen, font, player_emotion, enemy_emotion)
@@ -2440,7 +2661,9 @@ def run_battle(screen, stage_code):
         # 혹시 부동소수점 오차가 있어도 정확히 원래 위치로
         mover.rect.center = (orig_x, orig_y)
 
-    def play_focus_clash_animation(unit_a, unit_b):
+    def play_focus_clash_animation(unit_a, unit_b,
+                                   dice_index=None, va=None, vb=None, winner=None, **kwargs):
+
         """
         합공 1회 주사위 연출.
         - 이상적으로는 '속도가 빠른 쪽'이 앞으로 나와야 하는데,
@@ -2454,10 +2677,11 @@ def run_battle(screen, stage_code):
         target = unit_b
         play_focus_motion(mover, target)
 
-    def play_focus_one_sided_animation(attacker, defender):
+    def play_focus_one_sided_animation(attacker, defender, dice_index=None, val=None, **kwargs):
         """
         일방공격 1회 주사위 연출.
         - 공격하는 쪽이 상대에게 다가갔다가 돌아온다.
+        - dice_index / val은 나중에 주사위 숫자 연출에 쓰려고 남겨둔 인자.
         """
         if attacker is None or defender is None:
             return
@@ -2554,7 +2778,6 @@ def run_battle(screen, stage_code):
         dt = clock.tick(60)
 
         # --- 막이 아직 시작되지 않았으면 여기서 시작 처리 ---
-        # --- 막이 아직 시작되지 않았으면 여기서 시작 처리 ---
         if not scene_started:
             start_scene(scene_index, all_units)
 
@@ -2563,6 +2786,10 @@ def run_battle(screen, stage_code):
             speed_rolled = False
 
             scene_started = True
+
+        # 🔹 전투 연출 모드일 땐 매 프레임 애니메이션 업데이트
+        if anim_state["mode"]:
+            update_battle_animation(dt)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -2576,49 +2803,30 @@ def run_battle(screen, stage_code):
                     result = "retreat"
 
                 if event.key == pygame.K_SPACE:
-                    # 1) 아직 이번 막의 속도를 안 굴렸다면 → 속도 굴리기 + 적 계획 잡기
+                    # 0. 연출 중이면 스페이스바 무시
+                    if anim_state["mode"]:
+                        continue
+
+                    # 1. 아직 속도를 안 굴렸으면 → 속도 굴리기 + 적 계획
                     if not speed_rolled:
                         for u in all_units:
                             u.roll_speed()
 
-                        # 속도 확정 후에 적들이 자동으로 아군을 타겟팅
                         plan_enemy_actions(enemy_group, ally_group)
-
                         speed_rolled = True
+                        # 여기서 바로 return/continue 해서 "속도 굴리는 스페이스"와
+                        # "전투 시작 스페이스"를 분리해도 됨
+                        continue
 
-                    # 2) 이미 속도가 굴려진 상태라면 → 실제 전투(합/일방 공격) 실행
-                    else:
-                        execute_scene_actions(
-                            screen,
-                            font,
-                            all_units,
-                            ally_group,
-                            enemy_group,
-                            show_enemy_arrows,
-                            show_ally_arrows,
-                            show_mutual_arrows,
-                        )
-
-                        # 막 종료 처리 (상태이상, 카드 드로우 등)
-                        end_scene(all_units)
-
-                        clear_attention_last()
-
-                        # 다음 막으로
-                        scene_index += 1
-                        scene_started = False  # 다음 루프에서 start_scene 이 호출됨
-
-                        # 유저 선택 상태 초기화
-                        selected_unit = None
-                        selected_card = None
-                        is_dragging_card = False
-
-
-
-                if event.key == pygame.K_a:
-                    # 테스트용: 적 전체에게 참격 10
-                    for e in enemy_group:
-                        e.take_damage(10, DamageType.SLASH)
+                    # 2. 속도는 굴려졌고, 아직 연출을 시작하지 않았다면 → 이번 막 액션 리스트 만들고 연출 시작
+                    if not anim_state["finished"] and not anim_state["mode"]:
+                        actions = build_scene_actions(all_units, ally_group, enemy_group)
+                        if actions:
+                            start_battle_animation(actions)
+                        else:
+                            # 공격 계획이 하나도 없는 경우 → 그냥 막을 넘기고 싶으면 여기서 바로 end_scene 호출해도 됨
+                            pass
+                        continue
 
                 # N 키: 테스트용으로 '막 종료 후 다음 막 시작'
                 if event.key == pygame.K_n:
@@ -2629,27 +2837,7 @@ def run_battle(screen, stage_code):
                     scene_index += 1
                     scene_started = False   # 다음 루프에서 start_scene()이 다시 호출됨
 
-                # C 키: 테스트용 합 시뮬레이션
-                if event.key == pygame.K_c:
-                    # 아군 중 살아있는 첫 유닛, 적군 중 살아있는 첫 유닛 찾기
-                    attacker = None
-                    defender = None
-                    for u in ally_group:
-                        if not u.is_dead and not u.is_escaped:
-                            attacker = u
-                            break
-                    for e in enemy_group:
-                        if not e.is_dead and not e.is_escaped:
-                            defender = e
-                            break
 
-                    if attacker is not None and defender is not None:
-                        # 예시: 아군 공격 주사위 (3~7 참격), 적 방어 주사위 (2~5)
-                        atk_dice = Dice(attacker, DiceKind.ATTACK, 3, 7, DamageType.SLASH)
-                        def_dice = Dice(defender, DiceKind.DEFENSE, 2, 5, None)
-
-                        winner, va, vb = resolve_clash(atk_dice, def_dice)
-                        print(f"합 결과: A({atk_dice.kind.name})={va}, B({def_dice.kind.name})={vb}, winner={winner}")
                 # 1번 키: 적이 누구를 노리고 있는지 화살표 표시 토글
                 if event.key == pygame.K_1:
                     show_enemy_arrows = not show_enemy_arrows
@@ -2662,13 +2850,14 @@ def run_battle(screen, stage_code):
                 if event.key == pygame.K_3:
                     show_mutual_arrows = not show_mutual_arrows
 
-
             if event.type == pygame.MOUSEBUTTONDOWN:
                 mouse_pos = event.pos
 
-                # ✅ 속도 굴리기 전(0막 느낌)에는 토큰/카드 관련 상호작용 금지
-                if not speed_rolled:
+                # ✅ 속도 굴리기 전(0막 느낌) 또는 연출 모드 중에는
+                #    토큰/카드 관련 상호작용 금지
+                if not speed_rolled or anim_state["mode"]:
                     continue
+
 
                 # ---- 우클릭 공통: 드래그 취소 우선 ----
                 if event.button == 3:
@@ -2734,37 +2923,8 @@ def run_battle(screen, stage_code):
                         if selected_unit is u and selected_token_index == clicked_token_idx:
                             selected_unit = None
                             selected_token_index = None
-
-                    # 우클릭 처리 후에는 더 이상 이 이벤트로 할 일이 없음
                     continue
 
-                    if clicked_unit is not None:
-                        # 적은 좌클릭으로 선택 불가 (아군만 선택 가능)
-                        if not clicked_unit.is_ally:
-                            continue
-
-                        # a) 아직 아무 유닛도 선택 안 한 상태 → 이 유닛 + 해당 토큰 선택
-                        if selected_unit is None:
-                            selected_unit = clicked_unit
-                            selected_token_index = clicked_token_idx
-                        else:
-                            # b) 이미 어떤 유닛이 선택된 상태
-                            if clicked_unit is not selected_unit:
-                                # 다른 유닛으로 변경
-                                selected_unit = clicked_unit
-                            # 어떤 경우든, 이번에 클릭한 토큰 인덱스로 갱신
-                            selected_token_index = clicked_token_idx
-
-                        continue
-
-                        # (b) 현재 선택된 유닛을 우클릭 → 선택 해제
-                        if clicked_unit is selected_unit:
-                            selected_unit = None
-                            selected_token_index = None
-                            continue
-
-                    # (3) 빈 곳 우클릭은 아무 동작 없음
-                    continue
 
                 # ---- 좌클릭 ----
                 if event.button == 1:
@@ -2782,10 +2942,7 @@ def run_battle(screen, stage_code):
 
                         draw_drag_arrow(screen, start, mouse_pos, (80, 160, 255))
 
-                        # 🔴 여기! 유닛만 가져오던 걸 → (유닛, 토큰 인덱스) 로 가져오게 수정
-                        # 기존:
-                        # clicked_enemy = get_unit_at_token(enemy_group, mouse_pos)
-                        # 변경:
+
                         clicked_enemy, clicked_enemy_token_idx = get_token_at_pos(enemy_group, mouse_pos)
 
                         if clicked_enemy is not None:
@@ -2829,8 +2986,6 @@ def run_battle(screen, stage_code):
 
                             selected_unit.attack_token_index = selected_token_index
 
-                            # 이하 speed 계산 + update_counter_target_on_attack 부분은 기존 코드 그대로 유지
-                            ...
 
                             # 🔹 이번 공격에 사용한 토큰의 속도를 계산
                             speed_values = getattr(selected_unit, "speed_values", [])
@@ -2923,6 +3078,7 @@ def run_battle(screen, stage_code):
                     # 3) 토큰도, 카드도 아니면 → 아무 동작 없음
 
 
+
         # 승리/패배 조건 체크 (예: 적 전멸 → win, 아군 전멸 → lose)
         if all(e.is_dead or e.is_escaped for e in enemy_group):
             result = "win"
@@ -2978,36 +3134,40 @@ def run_battle(screen, stage_code):
 
         # 1) 유닛들 먼저 그리기
         for u in all_units:
-            u.draw(screen, font)
+            # 연출 중(anim_state["mode"] == True)에는 머리 위 토큰 숨김
+            u.draw(screen, font, show_speed_token=not anim_state["mode"])
 
         # 2) 적/아군 계획 화살표 + 합공격(양방향) 표시
 
         # 합공 쌍 (아군, 적) 유닛 튜플 목록
+        # 합공 쌍 (아군, 적) 유닛 튜플 목록
         mutual_pairs = find_mutual_target_pairs(ally_group, enemy_group)
 
-        # 노란 합공 화살표 (3번 키)
-        if show_mutual_arrows:
-            draw_mutual_arrows(screen, mutual_pairs, (255, 230, 80))
+        # 🔹 연출 모드가 아닐 때만 화살표 표시
+        if not anim_state["mode"]:
+            # 노란 합공 화살표 (3번 키)
+            if show_mutual_arrows:
+                draw_mutual_arrows(screen, mutual_pairs, (255, 230, 80))
 
-        # 파란/빨간 일방 화살표 (합공에 해당하는 쌍은 빼고 그림)
-        if show_enemy_arrows:
-            draw_planned_arrows(
-                screen,
-                enemy_group,
-                (255, 80, 80),
-                mutual_pairs=mutual_pairs,
-                highlight_unit=enemy_highlight_unit,
-                highlight_token_index=enemy_highlight_token_index,
-            )
+            # 파란/빨간 일방 화살표
+            if show_enemy_arrows:
+                draw_planned_arrows(
+                    screen,
+                    enemy_group,
+                    (255, 80, 80),
+                    mutual_pairs=mutual_pairs,
+                    highlight_unit=enemy_highlight_unit,
+                    highlight_token_index=enemy_highlight_token_index,
+                )
 
-        if show_ally_arrows:
-            draw_planned_arrows(
-                screen,
-                ally_group,
-                (80, 160, 255),
-                mutual_pairs=mutual_pairs,
-                highlight_unit=None,  # 아군 화살표는 그대로
-            )
+            if show_ally_arrows:
+                draw_planned_arrows(
+                    screen,
+                    ally_group,
+                    (80, 160, 255),
+                    mutual_pairs=mutual_pairs,
+                    highlight_unit=None,
+                )
 
         # 3) 카드 드래그 중이면 선택한 '속도 토큰'에서 마우스까지 임시 화살표
         if is_dragging_card and selected_unit is not None and selected_card is not None:

@@ -3,8 +3,8 @@ import pygame
 from unit import WHITE
 from battle import run_battle
 
-SCREEN_WIDTH = 900
-SCREEN_HEIGHT = 600
+SCREEN_WIDTH = 1280
+SCREEN_HEIGHT = 720
 
 
 def main():

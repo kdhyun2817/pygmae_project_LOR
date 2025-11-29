@@ -191,7 +191,6 @@ class Unit(pygame.sprite.Sprite):
         # --- 빛 예약(플레이 계획용) ---
         self.light_reserved = 0  # 예약된 빛 총합
         self.light_reserved_per_token = {}  # token_index -> cost
-        self.light_blink_timer = 0  # 빛 UI 깜빡임 시간(프레임 카운트)
 
         # --- 대미지 / 회복 플로팅 텍스트 ---
         #   {"text": "-5", "color": (r,g,b), "frames": 남은 프레임, "dy": y오프셋}
@@ -305,7 +304,6 @@ class Unit(pygame.sprite.Sprite):
         # 새 막 시작할 때 빛 예약도 초기화
         self.light_reserved = 0
         self.light_reserved_per_token = {}
-        self.light_blink_timer = 0
 
     # =============================
     # 상태이상 리스트
@@ -797,11 +795,19 @@ class Unit(pygame.sprite.Sprite):
             pygame.draw.polygon(surface, fill_color, points)
             pygame.draw.polygon(surface, LIGHT_BORDER_COLOR, points, 1)
 
-    def draw(self, surface, font):
+    def draw(self, surface, font, show_speed_token=True):
+        # 캐릭터 스프라이트
         surface.blit(self.image, self.rect)
-        self.draw_speed_token(surface, font)
+
+        # HP/SP 바
         self.draw_hp_sp_bar(surface)
+
+        # 빛 UI
         self.draw_light(surface)
+
+        # 속도 토큰은 show_speed_token이 True일 때만
+        if show_speed_token:
+            self.draw_speed_token(surface, font)
 
         # --- HP/SP 변화 플로팅 텍스트 ---
         for i, p in enumerate(self.damage_popups):

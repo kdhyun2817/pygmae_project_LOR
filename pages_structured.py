@@ -64,20 +64,11 @@ class CombatPage:
 
 def _parse_status(s: str) -> Optional[StatusType]:
     s = (s or "").strip().upper()
-    if not s:
-        return None
-    if s == "HASTE":
-        return StatusType.HASTE
-    if s == "STRENGTH":
-        return StatusType.STRENGTH
-    if s == "ENDURANCE":
-        return StatusType.ENDURANCE
-    if s == "FRAGILE":
-        return StatusType.FRAGILE
-    if s == "BLEED":
-        return StatusType.BLEED
-    if s == "PARALYSIS":
-        return StatusType.PARALYSIS
+    if not s: return None
+    if s == "HASTE": return StatusType.HASTE
+    if s == "STRENGTH": return StatusType.STRENGTH
+    if s == "ENDURANCE": return StatusType.ENDURANCE
+    if s == "FRAGILE": return StatusType.FRAGILE
     if s == "PROTECT": return StatusType.PROTECT
     if s == "VULNERABLE": return StatusType.VULNERABLE
     if s == "PARALYSIS": return StatusType.PARALYSIS
