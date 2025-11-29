@@ -1481,8 +1481,8 @@ def resolve_clash(dice_a, dice_b):
     ka, kb = dice_a.kind, dice_b.kind
 
     # --- 주사위 굴림 ---
-    va = dice_a.value if dice_a.value is not None else dice_a.roll()
-    vb = dice_b.value if dice_b.value is not None else dice_b.roll()
+    va = dice_a.roll()
+    vb = dice_b.roll()
 
     # --- 공통 트리거: 롤 직후 ---
     apply_dice_trigger(dice_a, ua, ub, EffectTrigger.ON_ROLL)
@@ -2038,26 +2038,11 @@ def execute_scene_actions(
         if kind == "clash":
             resolve_clash_between_units(
                 a, b,
-                screen=screen,
-                font=font,
-                all_units=all_units,
-                ally_group=ally_group,
-                enemy_group=enemy_group,
-                show_enemy_arrows=show_enemy_arrows,
-                show_ally_arrows=show_ally_arrows,
-                show_mutual_arrows=show_mutual_arrows,
+
             )
         elif kind == "one_sided":
             resolve_one_sided_sequence(
                 a, b,
-                screen=screen,
-                font=font,
-                all_units=all_units,
-                ally_group=ally_group,
-                enemy_group=enemy_group,
-                show_enemy_arrows=show_enemy_arrows,
-                show_ally_arrows=show_ally_arrows,
-                show_mutual_arrows=show_mutual_arrows,
             )
 
 
@@ -3062,4 +3047,3 @@ def run_battle(screen, stage_code):
         pygame.display.flip()
 
     return result
-
