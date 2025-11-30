@@ -12,9 +12,9 @@ from pages_structured import load_combat_pages, CombatPage, EffectTarget, Effect
 
 COMBAT_PAGES = load_combat_pages("combat_pages_structured.csv")
 
-# --- 주목(Attention) 주사위 연출용 전역 애니메이션 함수 포인터 ---
-PLAY_CLASH_FOCUS_ANIM = None        # 합공 1회 주사위 연출용
-PLAY_ONESIDED_FOCUS_ANIM = None     # 일방공 1회 주사위 연출용
+# # --- 주목(Attention) 주사위 연출용 전역 애니메이션 함수 포인터 ---
+# PLAY_CLASH_FOCUS_ANIM = None        # 합공 1회 주사위 연출용
+# PLAY_ONESIDED_FOCUS_ANIM = None     # 일방공 1회 주사위 연출용
 
 
 # --- 주목(Attention) 시스템용 마지막 주사위 로그 ---
@@ -1772,7 +1772,6 @@ def resolve_clash_between_units(unit_a, unit_b):
     # (선택) 주목/연출 훅: set_attention_last, PLAY_CLASH_FOCUS_ANIM 등은
     # 네가 다른 파일/코드에서 정의해놨을 수 있어서, globals().get으로 안전하게 가져온다.
     set_attention_last = globals().get("set_attention_last")
-    play_clash_anim = globals().get("PLAY_CLASH_FOCUS_ANIM")
     clear_popups = globals().get("clear_all_damage_popups")
 
     # 속도 기준으로 빠른/느린 쪽 (연출용)
@@ -1819,15 +1818,6 @@ def resolve_clash_between_units(unit_a, unit_b):
                     "winner": winner,
                 })
 
-            # 🔹 연출: LoR식으로 '빠른 쪽'이 상대 앞으로
-            if callable(play_clash_anim):
-                try:
-                    play_clash_anim(faster_unit, slower_unit, dice_index=i,
-                                    va=va, vb=vb, winner=winner)
-                except TypeError:
-                    # 기존 구현이 (mover, target)만 받는 경우 대비
-                    play_clash_anim(faster_unit, slower_unit)
-
         # 2) A만 굴릴 수 있음 → A 일방 공격
         elif can_a and (not can_b):
             val = resolve_one_sided_attack(d_a, unit_a, unit_b)
@@ -1842,13 +1832,6 @@ def resolve_clash_between_units(unit_a, unit_b):
                     "dice_index": i,
                     "val_a": val,
                 })
-
-            play_one = globals().get("PLAY_ONESIDED_FOCUS_ANIM")
-            if callable(play_one):
-                try:
-                    play_one(unit_a, unit_b, dice_index=i, val=val)
-                except TypeError:
-                    play_one(unit_a, unit_b)
 
         # 3) B만 굴릴 수 있음 → B 일방 공격
         elif can_b and (not can_a):
@@ -1865,12 +1848,6 @@ def resolve_clash_between_units(unit_a, unit_b):
                     "val_a": val,
                 })
 
-            play_one = globals().get("PLAY_ONESIDED_FOCUS_ANIM")
-            if callable(play_one):
-                try:
-                    play_one(unit_b, unit_a, dice_index=i, val=val)
-                except TypeError:
-                    play_one(unit_b, unit_a)
         # 둘 다 못 굴리면 스킵 (ex. 둘 다 기절 등)
 
 
@@ -1902,7 +1879,6 @@ def resolve_one_sided_sequence(attacker, defender):
     dice_list = build_dice_list_for_page(page, attacker)
 
     set_attention_last = globals().get("set_attention_last")
-    play_one = globals().get("PLAY_ONESIDED_FOCUS_ANIM")
     clear_popups = globals().get("clear_all_damage_popups")
 
     for idx, d in enumerate(dice_list):
@@ -1932,12 +1908,6 @@ def resolve_one_sided_sequence(attacker, defender):
                 "dice_index": idx,
                 "val_a": val,
             })
-
-        if callable(play_one):
-            try:
-                play_one(attacker, defender, dice_index=idx, val=val)
-            except TypeError:
-                play_one(attacker, defender)
 
 
 
@@ -2351,10 +2321,10 @@ def run_battle(screen, stage_code):
             return
 
         # 상수: 각 phase 시간 (ms)
-        APPROACH_TIME = 300
-        DICE_TIME = 200   # 여기서 실제 피해 처리
-        HOLD_TIME = 200
-        RETURN_TIME = 400
+        APPROACH_TIME = 600  # 0.6초 동안 앞으로 이동 (기존 300보다 느리게)
+        DICE_TIME = 200  # 그대로
+        HOLD_TIME = 200  # 그대로
+        RETURN_TIME = 600  # 0.6초 동안 제자리로 복귀 (기존 400보다 느리게)
 
         # 아직 귀환 phase 전에, 개별 action들을 처리하는 부분
         if anim_state["phase"] in ("idle", "approach", "dice", "hold"):
@@ -2376,7 +2346,9 @@ def run_battle(screen, stage_code):
 
             # 1) approach: 빠른 쪽/공격자가 앞으로 이동
             if anim_state["phase"] == "approach":
-                t = min(anim_state["timer"] / APPROACH_TIME, 1.0)
+                raw_t = min(anim_state["timer"] / APPROACH_TIME, 1.0)
+                # 부드러운 ease-in-out (천천히 출발 → 중간에 빠름 → 끝에서 다시 천천히)
+                t = raw_t * raw_t * (3 - 2 * raw_t)
 
                 if kind == "clash":
                     # 합공: 더 빠른 쪽이 느린 쪽 앞으로 이동
@@ -2474,7 +2446,8 @@ def run_battle(screen, stage_code):
         # 4) 모든 action 처리 후: 전체 귀환(return) 연출
         if anim_state["phase"] == "return":
             anim_state["return_timer"] += dt
-            t = min(anim_state["return_timer"] / RETURN_TIME, 1.0)
+            raw_t = min(anim_state["return_timer"] / RETURN_TIME, 1.0)
+            t = raw_t * raw_t * (3 - 2 * raw_t)
 
             for u in all_units:
                 if hasattr(u, "home_pos") and hasattr(u, "current_pos"):
@@ -2596,38 +2569,45 @@ def run_battle(screen, stage_code):
         # 창이 '응답 없음' 안 뜨게 이벤트 펌프
         pygame.event.pump()
 
+
+    # --- 주사위 1회 연출용: 캐릭터 슬라이드 이동 ---
+
     def play_focus_motion(
-            mover,
-            target,
-            base_move_dist=300,  # 기본 이동 거리 (픽셀)
-            step_count=6,  # 앞/뒤 각각 6스텝 → 한 스텝이 더 크게 이동
-            step_delay_ms=40,  # 스텝 사이 딜레이 (조금 느리게)
-            hold_ms=800  # 앞에 붙어 멈춰 있는 시간
+        mover,
+        target,
+        base_move_dist=200,   # 기본 이동 거리 (픽셀) – 너무 멀지 않게 줄였음
+        step_count=12,        # 앞/뒤 각각 12스텝 → 더 부드러운 슬라이드
+        step_delay_ms=30,     # 스텝 사이 딜레이 (조금 느리게)
+        hold_ms=400           # 앞에 붙어서 멈춰 있는 시간
     ):
         """
-        한 유닛(mover)이 target 쪽으로 '확' 다가갔다가 돌아오는 연출.
-        - 이전 버전보다:
-          - 이동 거리는 더 멀리
-          - 스텝 수는 줄여서 한 번에 확 튀어나오는 느낌
-          - 전체 딜레이는 늘려서 전투 템포를 느리게
+        한 유닛(mover)이 target 쪽으로 '천천히' 다가갔다가 돌아오는 연출.
+
+        - 이전 코드처럼 pygame.time.delay + render_focus_scene() 를 사용하지만
+          step_count를 늘리고, 이동 거리를 조절해서
+          순간이동 느낌이 아니라 슬라이드 느낌이 나도록 만든다.
         """
         if mover is None or target is None:
             return
 
-        # 원래 위치 저장
-        orig_x, orig_y = mover.rect.center
+        # 현재 위치 기준은 rect.center를 쓰되,
+        # current_pos가 있다면 같이 갱신해서 나머지 코드랑 어긋나지 않게 맞춰준다.
+        if hasattr(mover, "current_pos"):
+            orig_x, orig_y = mover.current_pos
+        else:
+            orig_x, orig_y = mover.rect.center
 
-        # 대상과의 거리/방향 계산
-        dx = target.rect.centerx - mover.rect.centerx
-        dy = target.rect.centery - mover.rect.centery
+        # 대상과의 거리/방향 계산 (타겟 바로 앞 safe_margin 만큼만 다가가기)
+        tx, ty = target.rect.center
+        dx = tx - orig_x
+        dy = ty - orig_y
         dist = (dx ** 2 + dy ** 2) ** 0.5 or 1.0
 
-        # 너무 가까우면 많이 안 움직이고, 너무 멀면 타겟을 넘어가지 않게 조정
-        # → 타겟과 어느 정도 간격(예: 60px)을 두고 멈추게
         safe_margin = 60
         max_allowed = max(0, dist - safe_margin)
         move_dist = min(base_move_dist, max_allowed)
 
+        # 이동 벡터
         total_dx = dx / dist * move_dist
         total_dy = dy / dist * move_dist
 
@@ -2636,56 +2616,70 @@ def run_battle(screen, stage_code):
 
         anim_x, anim_y = float(orig_x), float(orig_y)
 
-        # 1) 앞으로 다가가기
+        # 1) 앞으로 다가가기 (step_count번에 나눠서 슬라이드)
         for _ in range(step_count):
             anim_x += step_dx
             anim_y += step_dy
+
+            # 위치 반영
+            if hasattr(mover, "current_pos"):
+                mover.current_pos[0] = anim_x
+                mover.current_pos[1] = anim_y
             mover.rect.center = (int(anim_x), int(anim_y))
 
-            # 연출 장면 렌더 (유닛/화살표/감정/주목 UI)
+            # 한 프레임 렌더
             render_focus_scene()
             pygame.time.delay(step_delay_ms)
 
-        # 2) 앞에서 잠깐 멈추고, 데미지/주사위 값이 눈에 들어오게 기다리기
-        render_focus_scene()
-        pygame.time.delay(hold_ms)
+        # 2) 앞에서 잠깐 멈추고, 데미지/주사위 값을 볼 시간 주기
+        elapsed = 0
+        while elapsed < hold_ms:
+            render_focus_scene()
+            pygame.time.delay(30)
+            elapsed += 30
 
-        # 3) 원위치로 복귀
+        # 3) 원위치로 슬라이드 복귀
         for _ in range(step_count):
             anim_x -= step_dx
             anim_y -= step_dy
+
+            if hasattr(mover, "current_pos"):
+                mover.current_pos[0] = anim_x
+                mover.current_pos[1] = anim_y
             mover.rect.center = (int(anim_x), int(anim_y))
+
             render_focus_scene()
             pygame.time.delay(step_delay_ms)
 
-        # 혹시 부동소수점 오차가 있어도 정확히 원래 위치로
-        mover.rect.center = (orig_x, orig_y)
+        # 4) 부동소수점 오차 방지를 위해 정확히 원래 위치로 스냅
+        if hasattr(mover, "current_pos"):
+            mover.current_pos[0] = orig_x
+            mover.current_pos[1] = orig_y
+        mover.rect.center = (int(orig_x), int(orig_y))
 
     def play_focus_clash_animation(unit_a, unit_b,
                                    dice_index=None, va=None, vb=None, winner=None, **kwargs):
-
         """
         합공 1회 주사위 연출.
-        - 이상적으로는 '속도가 빠른 쪽'이 앞으로 나와야 하는데,
-          여기서는 함수 내부에서 속도 정보를 바로 쓰기 어렵다고 판단해서
-          일단 unit_a가 앞으로 나오는 걸 기본으로 했다.
-          (속도 정보 구조를 정리한 뒤에는 이 부분만 교체하면 됨.)
+        일단 unit_a를 앞으로 나가는 쪽으로 사용한다.
+        (나중에 '속도 빠른 쪽' 기준으로 바꾸고 싶으면 여기만 손보면 됨)
         """
         if unit_a is None or unit_b is None:
             return
-        mover = unit_a   # TODO: 나중에 '빠른 쪽' 계산으로 바꾸기
+        mover = unit_a
         target = unit_b
         play_focus_motion(mover, target)
 
-    def play_focus_one_sided_animation(attacker, defender, dice_index=None, val=None, **kwargs):
+    def play_focus_one_sided_animation(attacker, defender,
+                                       dice_index=None, val=None, **kwargs):
         """
-        일방공격 1회 주사위 연출.
-        - 공격하는 쪽이 상대에게 다가갔다가 돌아온다.
-        - dice_index / val은 나중에 주사위 숫자 연출에 쓰려고 남겨둔 인자.
+        일방 공격 주사위 연출.
+        공격자(attacker)가 상대에게 다가갔다가 돌아오는 연출만 한다.
         """
         if attacker is None or defender is None:
             return
         play_focus_motion(attacker, defender)
+
 
 
     def draw_focus_info_ui(surface, font):
@@ -3134,6 +3128,11 @@ def run_battle(screen, stage_code):
 
         # 1) 유닛들 먼저 그리기
         for u in all_units:
+            # current_pos 기준으로 rect 위치를 갱신
+            if hasattr(u, "current_pos"):
+                u.rect.centerx = int(u.current_pos[0])
+                u.rect.centery = int(u.current_pos[1])
+
             # 연출 중(anim_state["mode"] == True)에는 머리 위 토큰 숨김
             u.draw(screen, font, show_speed_token=not anim_state["mode"])
 
