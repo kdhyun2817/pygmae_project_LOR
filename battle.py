@@ -1165,21 +1165,18 @@ def draw_planned_arrows(
     token_plans에 기록된 토큰별 공격 계획을 기준으로
     토큰 코인 → 타깃 코인 방향으로 화살표를 그린다.
 
-    mutual_pairs: find_mutual_target_pairs 로 구해진 (아군, 적) 유닛 쌍 목록.
-      - 이 쌍에 해당하는 (공격 유닛, 타깃 유닛) 조합은
-        노란 합공 화살표로 따로 그리게 되므로,
-        여기서는 파란/빨간 화살표를 중복해서 그리지 않는다.
-      - 같은 유닛의 다른 토큰이 다른 적을 때리는 건 그대로 일방 화살표 유지.
-
-    highlight_unit, highlight_token_index:
-      - 특정 유닛(u)의 특정 토큰(token_idx)이 하이라이트 대상이면
-        그 토큰에서 나가는 화살표만 깜빡이게 한다.
+    mutual_pairs: find_mutual_target_pairs_per_token 으로 구해진
+      (아군, 아군 토큰 인덱스, 적, 적 토큰 인덱스) 목록.
+      - 이 쌍에 해당하는 '토큰'들은
+        노란 합공 화살표로 따로 그리기 때문에
+        여기서는 파란/빨간 화살표를 그리지 않는다.
     """
-    pair_set = set()
+    # 🔹 합공에 사용된 (유닛, 토큰 인덱스) 집합
+    clash_tokens = set()
     if mutual_pairs is not None:
-        for a, e in mutual_pairs:
-            pair_set.add((a, e))
-            pair_set.add((e, a))  # 양방향 모두 제외
+        for a, atk_idx, e, def_idx in mutual_pairs:
+            clash_tokens.add((a, atk_idx))
+            clash_tokens.add((e, def_idx))
 
     # 깜빡임 타이머 (약 0.15초 간격으로 on/off)
     tick = pygame.time.get_ticks()
@@ -1207,10 +1204,11 @@ def draw_planned_arrows(
             if page is None or target is None:
                 continue
 
-            # 🔹 이 (공격 유닛, 타깃 유닛) 조합이 합공 쌍이면
-            #    → 노란 합공 화살표만 보여주고, 파란/빨간 화살표는 전부 숨긴다.
-            if (u, target) in pair_set:
+            # 🔹 이 토큰이 합공(노란 화살표)으로 이미 표시되는 토큰이면
+            #    파란/빨간 화살표는 그리지 않는다.
+            if (u, token_idx) in clash_tokens:
                 continue
+
 
             # 시작점: 공격 토큰 코인
             if 0 <= token_idx < len(centers_u):
@@ -1274,56 +1272,70 @@ def find_mutual_target_pairs(ally_group, enemy_group):
             pairs.append((a, e))
     return pairs
 
+def find_mutual_target_pairs_per_token(ally_group, enemy_group):
+    """
+    토큰 단위로 서로를 노리는 합공 쌍들을 모두 찾는다.
+
+    반환값: [(ally_unit, ally_token_idx, enemy_unit, enemy_token_idx), ...]
+    """
+    pairs = []
+
+    for a in ally_group:
+        plans_a = getattr(a, "token_plans", {})
+        if not plans_a:
+            continue
+
+        for atk_idx, plan_a in plans_a.items():
+            target = plan_a.get("target")
+            if target is None or target.is_ally:
+                continue
+
+            e = target
+            plans_e = getattr(e, "token_plans", {})
+            if not plans_e:
+                continue
+
+            # 이 아군 토큰을 노리는 적 토큰을 찾는다.
+            for def_idx, plan_e in plans_e.items():
+                if plan_e.get("target") is a:
+                    pairs.append((a, atk_idx, e, def_idx))
+                    # 한 아군 토큰당 한 적 토큰만 합공 대상으로 잡고 끝낸다.
+                    break
+
+    return pairs
+
 
 def draw_mutual_arrows(surface, pairs, color):
     """
-    find_mutual_target_pairs 로 구해진 (아군, 적) 유닛 쌍 목록을 받아서,
-    각 유닛의 '공격 토큰 코인' ↔ '공격 토큰 코인' 방향으로 노란 화살표를 그린다.
+    find_mutual_target_pairs_per_token 으로 구해진
+    (아군, 아군 토큰 인덱스, 적, 적 토큰 인덱스) 목록을 받아서,
+    각 토큰 코인 ↔ 토큰 코인 방향으로 노란 화살표를 그린다.
 
-    pairs: [(ally_unit, enemy_unit), ...]
+    pairs: [(ally_unit, ally_token_idx, enemy_unit, enemy_token_idx), ...]
     color: (R, G, B)
     """
     if not pairs:
         return
 
-    for a, e in pairs:
+    for a, atk_idx, e, def_idx in pairs:
         if not is_unit_alive_and_present(a) or not is_unit_alive_and_present(e):
             continue
 
-        # 아군 A 시작점: 실제로 E를 노리는 토큰 인덱스를 우선 사용
-        atk_idx_a = None
-        token_plans_a = getattr(a, "token_plans", {})
-        for t_idx, plan in token_plans_a.items():
-            if plan.get("target") is e:
-                atk_idx_a = t_idx
-                break
-
+        # 아군 쪽 시작점: 해당 토큰 인덱스
         if hasattr(a, "get_speed_token_centers"):
             centers_a = a.get_speed_token_centers()
-            # token_plans 에서 못 찾았으면 대표 attack_token_index 또는 0번 토큰 사용
-            if atk_idx_a is None:
-                atk_idx_a = getattr(a, "attack_token_index", 0) or 0
-            if 0 <= atk_idx_a < len(centers_a):
-                start_a = centers_a[atk_idx_a]
+            if 0 <= atk_idx < len(centers_a):
+                start_a = centers_a[atk_idx]
             else:
                 start_a = centers_a[0] if centers_a else (a.rect.centerx, a.rect.top - 40)
         else:
             start_a = (a.rect.centerx, a.rect.top - 40)
 
-        # 적 E 시작점: 실제로 A를 노리는 토큰 인덱스를 우선 사용
-        atk_idx_e = None
-        token_plans_e = getattr(e, "token_plans", {})
-        for t_idx, plan in token_plans_e.items():
-            if plan.get("target") is a:
-                atk_idx_e = t_idx
-                break
-
+        # 적 쪽 시작점: 해당 토큰 인덱스
         if hasattr(e, "get_speed_token_centers"):
             centers_e = e.get_speed_token_centers()
-            if atk_idx_e is None:
-                atk_idx_e = getattr(e, "attack_token_index", 0) or 0
-            if 0 <= atk_idx_e < len(centers_e):
-                start_e = centers_e[atk_idx_e]
+            if 0 <= def_idx < len(centers_e):
+                start_e = centers_e[def_idx]
             else:
                 start_e = centers_e[0] if centers_e else (e.rect.centerx, e.rect.top - 40)
         else:
@@ -1332,6 +1344,7 @@ def draw_mutual_arrows(surface, pairs, color):
         # 서로에게 가는 양방향 노란 화살표
         draw_drag_arrow(surface, start_a, start_e, color)
         draw_drag_arrow(surface, start_e, start_a, color)
+
 
 def draw_drag_arrow(surface, start_pos, end_pos, color=(80, 160, 255)):
     """
@@ -1408,9 +1421,8 @@ def draw_focus_step(
     for u in all_units:
         u.draw(screen, font)
 
-
     # 2) 화살표
-    mutual_pairs = find_mutual_target_pairs(ally_group, enemy_group)
+    mutual_pairs = find_mutual_target_pairs_per_token(ally_group, enemy_group)
 
     if show_mutual_arrows:
         draw_mutual_arrows(screen, mutual_pairs, (255, 230, 80))
@@ -1919,9 +1931,13 @@ def execute_scene_actions(all_units, ally_group, enemy_group):
     """
     actions = build_scene_actions(all_units, ally_group, enemy_group)
 
-    for kind, _, a, b in actions:
+    for kind, _, a, b, atk_idx, def_idx in actions:
         if not is_unit_alive_and_present(a) or not is_unit_alive_and_present(b):
             continue
+
+        # 🔹 이번 action에 해당하는 토큰/페이지 세팅
+        apply_action_token_plan(kind, a, b, atk_idx, def_idx)
+
         if kind == "clash":
             resolve_clash_between_units(a, b)
         elif kind == "one_sided":
@@ -1934,65 +1950,174 @@ def build_scene_actions(all_units, ally_group, enemy_group):
     속도 순서대로 정렬한 리스트로 만들어 돌려준다.
 
     반환값:
-      actions = [(kind, speed, attacker, defender), ...]
+      actions = [
+        (kind, speed, attacker, defender, atk_token_idx, def_token_idx),
+        ...
+      ]
         kind: "clash" 또는 "one_sided"
         speed: 정렬용 속도값 (내림차순으로 처리)
+        atk_token_idx: 공격자가 사용하는 속도 토큰 인덱스 (없으면 None)
+        def_token_idx: 방어자가 사용하는 속도 토큰 인덱스 (없으면 None)
     """
-    # 1) 합공 쌍 찾기
-    mutual_pairs = find_mutual_target_pairs(ally_group, enemy_group)
-    units_in_pairs = set()
-    for a, e in mutual_pairs:
-        units_in_pairs.add(a)
-        units_in_pairs.add(e)
-
     actions = []
 
-    # 2) 합공 액션들
-    for a, e in mutual_pairs:
-        # 양쪽의 '실제로 공격에 사용하는 토큰' 속도를 기준으로 정렬용 속도 결정
-        sv_a = getattr(a, "speed_values", [])
-        idx_a = getattr(a, "attack_token_index", None)
-        if idx_a is not None and 0 <= idx_a < len(sv_a):
-            spd_a = sv_a[idx_a]
-        else:
-            spd_a = getattr(a, "current_speed", 0) or 0
-
-        sv_e = getattr(e, "speed_values", [])
-        idx_e = getattr(e, "attack_token_index", None)
-        if idx_e is not None and 0 <= idx_e < len(sv_e):
-            spd_e = sv_e[idx_e]
-        else:
-            spd_e = getattr(e, "current_speed", 0) or 0
-
-        effective_speed = max(spd_a, spd_e)
-        actions.append(("clash", effective_speed, a, e))
-
-    # 3) 합공에 포함되지 않은 유닛들의 일방 공격
+    # 토큰 계획(token_plans)을 쓰는 유닛이 하나라도 있는지 확인
+    any_token_plans = False
     for u in all_units:
-        if u in units_in_pairs:
-            continue
+        tps = getattr(u, "token_plans", None)
+        if tps:
+            any_token_plans = True
+            break
 
-        page = getattr(u, "planned_page", None)
-        target = getattr(u, "planned_target", None)
-        if page is None or target is None:
-            continue
-        if not is_unit_alive_and_present(u):
-            continue
-        if not is_unit_alive_and_present(target):
-            continue
+    if any_token_plans:
+        # 🔹 새 방식: 토큰 단위로 합공/일방을 만든다.
 
-        sv_u = getattr(u, "speed_values", [])
-        idx_u = getattr(u, "attack_token_index", None)
-        if idx_u is not None and 0 <= idx_u < len(sv_u):
-            spd = sv_u[idx_u]
-        else:
-            spd = getattr(u, "current_speed", 0) or 0
+        # 1) 토큰 단위 합공 쌍
+        mutual_pairs = find_mutual_target_pairs_per_token(ally_group, enemy_group)
+        used_tokens = set()  # (unit, token_idx) 집합
 
-        actions.append(("one_sided", spd, u, target))
+        # 2) 합공 액션들
+        for a, atk_idx, e, def_idx in mutual_pairs:
+            if not is_unit_alive_and_present(a) or not is_unit_alive_and_present(e):
+                continue
+
+            sv_a = getattr(a, "speed_values", [])
+            sv_e = getattr(e, "speed_values", [])
+
+            if sv_a and atk_idx is not None and 0 <= atk_idx < len(sv_a):
+                spd_a = sv_a[atk_idx]
+            else:
+                spd_a = getattr(a, "current_speed", 0) or 0
+
+            if sv_e and def_idx is not None and 0 <= def_idx < len(sv_e):
+                spd_e = sv_e[def_idx]
+            else:
+                spd_e = getattr(e, "current_speed", 0) or 0
+
+            effective_speed = max(spd_a, spd_e)
+            actions.append(("clash", effective_speed, a, e, atk_idx, def_idx))
+
+            used_tokens.add((a, atk_idx))
+            used_tokens.add((e, def_idx))
+
+        # 3) 합공에 사용되지 않은 토큰들의 일방 공격
+        for u in all_units:
+            token_plans = getattr(u, "token_plans", None)
+            if not token_plans:
+                continue
+
+            for token_idx, plan in token_plans.items():
+                if (u, token_idx) in used_tokens:
+                    continue
+
+                page = plan.get("page")
+                target = plan.get("target")
+                if page is None or target is None:
+                    continue
+                if not is_unit_alive_and_present(u):
+                    continue
+                if not is_unit_alive_and_present(target):
+                    continue
+
+                sv_u = getattr(u, "speed_values", [])
+                if sv_u and token_idx is not None and 0 <= token_idx < len(sv_u):
+                    spd = sv_u[token_idx]
+                else:
+                    spd = getattr(u, "current_speed", 0) or 0
+
+                def_idx = plan.get("def_token_index", None)
+                actions.append(("one_sided", spd, u, target, token_idx, def_idx))
+
+    else:
+        # 🔹 옛 방식: 유닛 단위 planned_page/planned_target만 있는 경우 (호환용)
+        mutual_pairs = find_mutual_target_pairs(ally_group, enemy_group)
+        units_in_pairs = set()
+        for a, e in mutual_pairs:
+            units_in_pairs.add(a)
+            units_in_pairs.add(e)
+
+        # 2) 합공 액션들 (유닛 단위)
+        for a, e in mutual_pairs:
+            if not is_unit_alive_and_present(a) or not is_unit_alive_and_present(e):
+                continue
+
+            sv_a = getattr(a, "speed_values", [])
+            idx_a = getattr(a, "attack_token_index", None)
+            if sv_a and idx_a is not None and 0 <= idx_a < len(sv_a):
+                spd_a = sv_a[idx_a]
+            else:
+                spd_a = getattr(a, "current_speed", 0) or 0
+
+            sv_e = getattr(e, "speed_values", [])
+            idx_e = getattr(e, "attack_token_index", None)
+            if sv_e and idx_e is not None and 0 <= idx_e < len(sv_e):
+                spd_e = sv_e[idx_e]
+            else:
+                spd_e = getattr(e, "current_speed", 0) or 0
+
+            effective_speed = max(spd_a, spd_e)
+            actions.append(("clash", effective_speed, a, e, idx_a, idx_e))
+
+        # 3) 합공에 포함되지 않은 유닛들의 일방 공격
+        for u in all_units:
+            if u in units_in_pairs:
+                continue
+
+            page = getattr(u, "planned_page", None)
+            target = getattr(u, "planned_target", None)
+            if page is None or target is None:
+                continue
+            if not is_unit_alive_and_present(u):
+                continue
+            if not is_unit_alive_and_present(target):
+                continue
+
+            sv_u = getattr(u, "speed_values", [])
+            idx_u = getattr(u, "attack_token_index", None)
+            if sv_u and idx_u is not None and 0 <= idx_u < len(sv_u):
+                spd = sv_u[idx_u]
+            else:
+                spd = getattr(u, "current_speed", 0) or 0
+
+            actions.append(("one_sided", spd, u, target, idx_u, None))
 
     # 4) 속도 내림차순 정렬 (빠른 순서대로 처리)
     actions.sort(key=lambda x: x[1], reverse=True)
     return actions
+
+
+def apply_action_token_plan(kind, attacker, defender, atk_token_idx, def_token_idx):
+    """
+    actions 항목에서 넘어온 토큰 인덱스를 기준으로
+    이번 한 번의 행동에 사용할 planned_page / planned_target /
+    attack_token_index / defense_token_index 를 세팅한다.
+    """
+
+    # 🔹 공격자 쪽 설정 (토큰 기반으로 page/target 선택)
+    if atk_token_idx is not None and hasattr(attacker, "token_plans"):
+        plan_a = attacker.token_plans.get(atk_token_idx)
+        if plan_a:
+            attacker.planned_page = plan_a.get("page")
+            attacker.planned_target = plan_a.get("target")
+            attacker.attack_token_index = atk_token_idx
+
+    # 🔹 수비자 쪽: 방어 토큰 인덱스는 화살표/속도 비교용으로 세팅
+    if def_token_idx is not None and hasattr(defender, "defense_token_index"):
+        defender.defense_token_index = def_token_idx
+    else:
+        # defense_token_index 속성이 항상 있는 건 아니어서 getattr로 체크
+        if def_token_idx is not None:
+            defender.defense_token_index = def_token_idx
+
+    # 🔹 합공인 경우, defender도 자기 토큰으로 공격을 하므로
+    #     수비자 쪽도 해당 토큰 계획을 공격용으로 세팅
+    if kind == "clash":
+        if def_token_idx is not None and hasattr(defender, "token_plans"):
+            plan_d = defender.token_plans.get(def_token_idx)
+            if plan_d:
+                defender.planned_page = plan_d.get("page")
+                defender.planned_target = plan_d.get("target")
+                defender.attack_token_index = def_token_idx
 
 
 
@@ -2055,17 +2180,18 @@ def run_battle(screen, stage_code):
 
     # 🔹 전투 연출(애니메이션) 상태
     anim_state = {
-        "mode": False,  # True면 연출 모드 진행 중
-        "actions": [],  # build_scene_actions 로 만든 리스트
-        "index": 0,  # 현재 처리 중인 action 인덱스
-        "phase": "idle",  # "idle" / "approach" / "dice" / "hold" / "return"
-        "timer": 0.0,  # 현재 phase에서 경과한 시간(ms)
-        "current_kind": None,  # "clash" / "one_sided"
+        "mode": False,
+        "actions": [],
+        "index": 0,
+        "phase": "idle",
+        "timer": 0.0,
+        "current_kind": None,
         "attacker": None,
         "defender": None,
-        "resolved": False,  # 이 action에 대해 실제 데미지 처리가 끝났는지
+        "resolved": False,
         "return_timer": 0.0,
-        "finished": False,  # True면 이번 막 연출이 모두 끝났다는 뜻
+        "finished": False,
+        "last_index": -1,
     }
 
     show_enemy_arrows = True  # 1번 키로 토글하는 표시 여부
@@ -2334,7 +2460,26 @@ def run_battle(screen, stage_code):
                 anim_state["return_timer"] = 0.0
                 return
 
-            kind, speed, a, b = anim_state["actions"][anim_state["index"]]
+            kind, speed, a, b, atk_idx, def_idx = anim_state["actions"][anim_state["index"]]
+
+            # 이번 action 정보 기록
+            anim_state["current_kind"] = kind
+            anim_state["attacker"] = a
+            anim_state["defender"] = b
+            anim_state["atk_token_index"] = atk_idx
+            anim_state["def_token_index"] = def_idx
+
+            # 👉 action 인덱스가 바뀌면, 이번 합공/일방용 시작 위치 캐시를 비운다
+            if anim_state.get("last_index", -1) != anim_state["index"]:
+                anim_state.pop("approach_base", None)
+                anim_state["last_index"] = anim_state["index"]
+
+            if kind == "clash":
+                # 🔹 이번 합공에 쓸 토큰/페이지 세팅
+                apply_action_token_plan(kind, a, b, atk_idx, def_idx)
+
+                # 합공: 더 빠른 쪽과 느린 쪽이 서로를 향해 이동
+                u1, u2 = a, b
 
             # 현재 action 캐시
             anim_state["current_kind"] = kind
@@ -2351,7 +2496,7 @@ def run_battle(screen, stage_code):
                 t = raw_t * raw_t * (3 - 2 * raw_t)
 
                 if kind == "clash":
-                    # 합공: 더 빠른 쪽이 느린 쪽 앞으로 이동
+                    # 합공: 더 빠른 쪽과 느린 쪽이 서로를 향해 이동
                     u1, u2 = a, b
 
                     # 각자의 공격 토큰 속도로 속도 비교
@@ -2370,26 +2515,68 @@ def run_battle(screen, stage_code):
                     else:
                         fast, slow = u2, u1
 
-                    # 느린 쪽은 제자리, 빠른 쪽이 앞으로
-                    sx, sy = slow.current_pos
-                    fx0, fy0 = fast.current_pos
+                    # 👉 이번 action의 '시작 위치'와 '목표 위치'를 한 번만 기록해 둔다
+                    if "approach_base" not in anim_state:
+                        fx0 = float(fast.current_pos[0])
+                        fy0 = float(fast.current_pos[1])
+                        sx0 = float(slow.current_pos[0])
+                        sy0 = float(slow.current_pos[1])
 
-                    # slow → fast 방향 벡터
-                    dir_x = sx - fx0
-                    dir_y = sy - fy0
-                    length = max((dir_x ** 2 + dir_y ** 2) ** 0.5, 1.0)
-                    dir_x /= length
-                    dir_y /= length
+                        dx = sx0 - fx0
+                        dy = sy0 - fy0
+                        dist = (dx * dx + dy * dy) ** 0.5 or 1.0
 
-                    # 느린 쪽 바로 앞까지 가도록 offset (약간 떨어진 거리)
-                    OFFSET = 60
-                    target_x = sx - dir_x * OFFSET
-                    target_y = sy - dir_y * OFFSET
+                        # fast → slow 방향 단위벡터
+                        dir_x = dx / dist
+                        dir_y = dy / dist
 
-                    # 선형 보간으로 fast를 이동
-                    fast.current_pos[0] = fx0 + (target_x - fx0) * t
-                    fast.current_pos[1] = fy0 + (target_y - fy0) * t
-                    # slow는 그대로 둠
+                        # fast 기준으로 slow 쪽으로 70% 지점 (둘이 "부딪칠" 중심점)
+                        ratio = 0.7
+                        center_x = fx0 + dx * ratio
+                        center_y = fy0 + dy * ratio
+
+                        # 둘 사이에 남길 최소 간격
+                        GAP = 80.0  # 필요하면 60~100 사이로 조정해봐
+                        half_gap = GAP / 2.0
+
+                        # 너무 가까우면 GAP를 거리의 절반보다 크게 쓰지 않도록 보정
+                        if half_gap * 2.0 > dist:
+                            half_gap = dist * 0.49
+
+                        # fast가 멈출 위치: 중심점에서 half_gap 만큼 뒤로
+                        fast_target_x = center_x - dir_x * half_gap
+                        fast_target_y = center_y - dir_y * half_gap
+
+                        # slow가 멈출 위치: 중심점에서 half_gap 만큼 앞으로
+                        slow_target_x = center_x + dir_x * half_gap
+                        slow_target_y = center_y + dir_y * half_gap
+
+                        anim_state["approach_base"] = {
+                            "mode": "clash",
+                            "fast": fast,
+                            "slow": slow,
+                            "fast_start": (fx0, fy0),
+                            "slow_start": (sx0, sy0),
+                            "fast_target": (fast_target_x, fast_target_y),
+                            "slow_target": (slow_target_x, slow_target_y),
+                        }
+
+                    base = anim_state["approach_base"]
+                    fast = base["fast"]
+                    slow = base["slow"]
+                    fx0, fy0 = base["fast_start"]
+                    sx0, sy0 = base["slow_start"]
+                    ftx, fty = base["fast_target"]
+                    stx, sty = base["slow_target"]
+
+                    # fast: 시작점 → fast_target까지 보간
+                    fast.current_pos[0] = fx0 + (ftx - fx0) * t
+                    fast.current_pos[1] = fy0 + (fty - fy0) * t
+
+                    # slow: 시작점 → slow_target까지 보간
+                    slow.current_pos[0] = sx0 + (stx - sx0) * t
+                    slow.current_pos[1] = sy0 + (sty - sy0) * t
+
 
                 else:
                     # 일방공: 공격자가 피격자 앞으로 이동
@@ -2420,6 +2607,9 @@ def run_battle(screen, stage_code):
             # 2) dice phase: 실제 전투 처리 + 간단한 표시
             if anim_state["phase"] == "dice":
                 if not anim_state["resolved"]:
+                    # 🔹 이번 action에 해당하는 토큰/페이지 세팅
+                    apply_action_token_plan(kind, a, b, atk_idx, def_idx)
+
                     # 🔹 여기서 실제 전투 로직 실행 (피해 계산, 감정코인 등)
                     if kind == "clash":
                         resolve_clash_between_units(a, b)
@@ -2530,7 +2720,7 @@ def run_battle(screen, stage_code):
         mutual_pairs = []
 
         if not anim_state["mode"]:
-            mutual_pairs = find_mutual_target_pairs(ally_group, enemy_group)
+            mutual_pairs = find_mutual_target_pairs_per_token(ally_group, enemy_group)
 
             if show_mutual_arrows:
                 draw_mutual_arrows(screen, mutual_pairs, (255, 230, 80))
@@ -3136,11 +3326,30 @@ def run_battle(screen, stage_code):
             # 연출 중(anim_state["mode"] == True)에는 머리 위 토큰 숨김
             u.draw(screen, font, show_speed_token=not anim_state["mode"])
 
-        # 2) 적/아군 계획 화살표 + 합공격(양방향) 표시
+        if anim_state["mode"]:
+            # 전체 화면을 반투명 검은색으로 덮어 디밍 효과
+            overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 150))  # 마지막 값이 알파(0~255)
+            screen.blit(overlay, (0, 0))
 
+            a = anim_state["attacker"]
+            b = anim_state["defender"]
+            focus_units = []
+            if a is not None:
+                focus_units.append(a)
+            if b is not None and b is not a:
+                focus_units.append(b)
+
+            # 주목 대상 유닛 두 명만 다시 그리기
+            for u in focus_units:
+                if hasattr(u, "current_pos"):
+                    u.rect.centerx = int(u.current_pos[0])
+                    u.rect.centery = int(u.current_pos[1])
+                u.draw(screen, font, show_speed_token=False)
+
+        # 2) 적/아군 계획 화살표 + 합공격(양방향) 표시
         # 합공 쌍 (아군, 적) 유닛 튜플 목록
-        # 합공 쌍 (아군, 적) 유닛 튜플 목록
-        mutual_pairs = find_mutual_target_pairs(ally_group, enemy_group)
+        mutual_pairs = find_mutual_target_pairs_per_token(ally_group, enemy_group)
 
         # 🔹 연출 모드가 아닐 때만 화살표 표시
         if not anim_state["mode"]:
