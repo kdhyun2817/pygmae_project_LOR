@@ -19,6 +19,7 @@ COMBAT_PAGES = load_combat_pages("combat_pages_structured.csv")
 
 # --- 주목(Attention) 시스템용 마지막 주사위 로그 ---
 ATTENTION_LAST = None  # {"kind": ..., "unit_a": ..., ...}
+RENDER_FOCUS_SCENE = None  # 주사위 연출용 화면 렌더 함수 포인터
 
 def set_attention_last(entry: dict):
     """최근에 처리한 주사위 1개 정보를 전역으로 저장 (주목 UI에서 사용)."""
@@ -104,6 +105,10 @@ def start_scene(scene_index, all_units):
     - 속도 주사위 리셋
     - 감정 단계 보너스(최대 빛 / 속도 주사위 개수) 적용
     """
+
+    # 🔹 이전 막의 주목 주사위 / 포커스 정보 초기화
+    clear_attention_last()
+    clear_focus_info()
 
     for u in all_units:
         # 감정 단계 보너스 적용
@@ -1747,8 +1752,9 @@ def resolve_clash_between_units(unit_a, unit_b):
     - 주사위를 인덱스 순서대로 1:1로 합 처리.
     - 더 많은 주사위를 가진 쪽의 남은 주사위는 일방공격.
     - 주사위 1개마다:
-        - resolve_clash / resolve_one_sided_attack 호출
-        - (선택) 주목/연출 훅 호출
+        - 주사위 '굴리는 연출'(랜덤 숫자 깜빡임)
+        - 실제 판정(resolve_clash / resolve_one_sided_attack)
+        - ATTENTION_LAST에 결과 기록
     """
     if not is_unit_alive_and_present(unit_a) or not is_unit_alive_and_present(unit_b):
         return
@@ -1781,13 +1787,10 @@ def resolve_clash_between_units(unit_a, unit_b):
     len_b = len(dice_b)
     max_len = max(len_a, len_b)
 
-    # (선택) 주목/연출 훅: set_attention_last, PLAY_CLASH_FOCUS_ANIM 등은
-    # 네가 다른 파일/코드에서 정의해놨을 수 있어서, globals().get으로 안전하게 가져온다.
-    set_attention_last = globals().get("set_attention_last")
+    # 연출용 훅
+    set_attention_last_fn = globals().get("set_attention_last")
     clear_popups = globals().get("clear_all_damage_popups")
-
-    # 속도 기준으로 빠른/느린 쪽 (연출용)
-    faster_unit, slower_unit = _pick_faster_slower(unit_a, unit_b)
+    render_focus = globals().get("RENDER_FOCUS_SCENE")
 
     for i in range(max_len):
         d_a = dice_a[i] if i < len_a else None
@@ -1801,24 +1804,51 @@ def resolve_clash_between_units(unit_a, unit_b):
         can_a = d_a is not None and can_unit_roll_dice(unit_a)
         can_b = d_b is not None and can_unit_roll_dice(unit_b)
 
-        # 🔹 주사위 1개 시작: 기존 데미지 팝업 정리 (있다면)
+        # 🔹 주사위 1개 시작: 기존 데미지 팝업 정리
         if callable(clear_popups):
-            # 전체 all_units를 넘기는 버전이라면 함수 시그니처에 맞춰 수정해서 써도 됨
             try:
                 clear_popups([unit_a, unit_b])
             except TypeError:
-                # unit_a, unit_b에 damage_popups가 달려 있는 구조라면 이렇게 해도 됨
                 for u in (unit_a, unit_b):
                     if hasattr(u, "damage_popups"):
                         u.damage_popups.clear()
+
+        # 🔹 실제 판정 전에 '숫자 막 바뀌는' 굴림 연출
+        if callable(render_focus) and callable(set_attention_last_fn):
+            TEMP_STEPS = 8       # 몇 번 깜빡일지
+            TEMP_DELAY = 80      # 한 번당 지연(ms)
+
+            for _ in range(TEMP_STEPS):
+                temp_va = None
+                temp_vb = None
+
+                if can_a and d_a is not None:
+                    temp_va = random.randint(d_a.min_value, d_a.max_value)
+                if can_b and d_b is not None:
+                    temp_vb = random.randint(d_b.min_value, d_b.max_value)
+
+                entry = {
+                    "kind": "clash",
+                    "unit_a": unit_a,
+                    "unit_b": unit_b,
+                    "page_a": page_a if d_a is not None else None,
+                    "page_b": page_b if d_b is not None else None,
+                    "dice_index": i,
+                    "val_a": temp_va,
+                    "val_b": temp_vb,
+                    "winner": None,
+                }
+                set_attention_last_fn(entry)
+                render_focus()
+                pygame.time.delay(TEMP_DELAY)
 
         # 1) 합공 주사위
         if can_a and can_b:
             winner, va, vb = resolve_clash(d_a, d_b)
 
-            # 🔹 주목 정보 기록 (있다면)
-            if callable(set_attention_last):
-                set_attention_last({
+            # 🔹 주목 정보 기록 (최종 값)
+            if callable(set_attention_last_fn):
+                set_attention_last_fn({
                     "kind": "clash",
                     "unit_a": unit_a,
                     "unit_b": unit_b,
@@ -1830,12 +1860,16 @@ def resolve_clash_between_units(unit_a, unit_b):
                     "winner": winner,
                 })
 
+            if callable(render_focus):
+                render_focus()
+                pygame.time.delay(350)
+
         # 2) A만 굴릴 수 있음 → A 일방 공격
         elif can_a and (not can_b):
             val = resolve_one_sided_attack(d_a, unit_a, unit_b)
 
-            if callable(set_attention_last):
-                set_attention_last({
+            if callable(set_attention_last_fn):
+                set_attention_last_fn({
                     "kind": "one_sided",
                     "unit_a": unit_a,
                     "unit_b": unit_b,
@@ -1845,12 +1879,16 @@ def resolve_clash_between_units(unit_a, unit_b):
                     "val_a": val,
                 })
 
+            if callable(render_focus):
+                render_focus()
+                pygame.time.delay(350)
+
         # 3) B만 굴릴 수 있음 → B 일방 공격
         elif can_b and (not can_a):
             val = resolve_one_sided_attack(d_b, unit_b, unit_a)
 
-            if callable(set_attention_last):
-                set_attention_last({
+            if callable(set_attention_last_fn):
+                set_attention_last_fn({
                     "kind": "one_sided",
                     "unit_a": unit_b,   # 공격자
                     "unit_b": unit_a,   # 피격자
@@ -1860,8 +1898,11 @@ def resolve_clash_between_units(unit_a, unit_b):
                     "val_a": val,
                 })
 
-        # 둘 다 못 굴리면 스킵 (ex. 둘 다 기절 등)
+            if callable(render_focus):
+                render_focus()
+                pygame.time.delay(350)
 
+        # 둘 다 못 굴리면 스킵
 
 
 def resolve_one_sided_sequence(attacker, defender):
@@ -1869,7 +1910,10 @@ def resolve_one_sided_sequence(attacker, defender):
     공격자 attacker가 defender를 향해 planned_page로 일방 공격하는 전체 처리.
     - 코스트 지불
     - 주사위 순서대로 굴리며, ATTACK 주사위만 실제 피해를 준다.
-    - 주사위 1개마다 주목/연출 훅 호출 (있다면)
+    - 각 주사위마다:
+        - 굴리는 연출(랜덤 숫자 깜빡임)
+        - 실제 판정(resolve_one_sided_attack)
+        - ATTENTION_LAST에 결과 기록
     """
     if not is_unit_alive_and_present(attacker):
         return
@@ -1890,8 +1934,9 @@ def resolve_one_sided_sequence(attacker, defender):
 
     dice_list = build_dice_list_for_page(page, attacker)
 
-    set_attention_last = globals().get("set_attention_last")
+    set_attention_last_fn = globals().get("set_attention_last")
     clear_popups = globals().get("clear_all_damage_popups")
+    render_focus = globals().get("RENDER_FOCUS_SCENE")
 
     for idx, d in enumerate(dice_list):
         if not can_unit_roll_dice(attacker):
@@ -1908,10 +1953,32 @@ def resolve_one_sided_sequence(attacker, defender):
                     if hasattr(u, "damage_popups"):
                         u.damage_popups.clear()
 
+        # 🔹 실제 판정 전, 굴리는 연출
+        if callable(render_focus) and callable(set_attention_last_fn):
+            TEMP_STEPS = 8
+            TEMP_DELAY = 80
+
+            for _ in range(TEMP_STEPS):
+                temp_val = random.randint(d.min_value, d.max_value)
+
+                entry = {
+                    "kind": "one_sided",
+                    "unit_a": attacker,
+                    "unit_b": defender,
+                    "page_a": page,
+                    "page_b": None,
+                    "dice_index": idx,
+                    "val_a": temp_val,
+                }
+                set_attention_last_fn(entry)
+                render_focus()
+                pygame.time.delay(TEMP_DELAY)
+
+        # 실제 일방 공격 판정
         val = resolve_one_sided_attack(d, attacker, defender)
 
-        if callable(set_attention_last):
-            set_attention_last({
+        if callable(set_attention_last_fn):
+            set_attention_last_fn({
                 "kind": "one_sided",
                 "unit_a": attacker,
                 "unit_b": defender,
@@ -1920,6 +1987,11 @@ def resolve_one_sided_sequence(attacker, defender):
                 "dice_index": idx,
                 "val_a": val,
             })
+
+        if callable(render_focus):
+            render_focus()
+            pygame.time.delay(200)
+
 
 
 
@@ -2270,29 +2342,151 @@ def run_battle(screen, stage_code):
     def draw_attention_dice_ui(surface, font):
         """
         ATTENTION_LAST에 저장된 마지막 주사위 정보를
-        양쪽 감정 UI 아래에 간단히 표시한다.
+        각 유닛 머리 위에 LoR 비슷한 형태로 표시한다.
 
-        아직은 execute_scene_actions가 한 번에 끝나기 때문에
-        '마지막으로 굴린 주사위 1개 정보'만 보이지만,
-        나중에 주사위별 delay를 넣으면 이 함수 그대로 재사용 가능.
+        - 아군: 왼쪽에 큰 육각형 주사위 + 오른쪽으로 남은 주사위들
+        - 적군: 반대로 오른쪽에 큰 육각형 + 왼쪽으로 남은 주사위들
         """
         entry = ATTENTION_LAST
         if not entry:
             return
 
-        width, height = surface.get_size()
+        small_font = pygame.font.SysFont("malgungothic", 16)
+        dice_index = entry.get("dice_index", 0)
 
-        # 감정 UI 위치와 맞추기 위한 기본 값 (draw_emotion_ui와 동일 기준)
-        box_w = 180
-        box_h = 80
-        margin = 10
-        gap = 6
+        # 간단 육각형 그리는 헬퍼
+        def draw_hex(center, radius, fill_color, border_color):
+            import math
+            cx, cy = center
+            points = []
+            # 평평한 윗면을 가진 육각형 (flat-top)
+            for i in range(6):
+                ang = math.radians(60 * i - 30)
+                x = cx + radius * math.cos(ang)
+                y = cy + radius * math.sin(ang)
+                points.append((x, y))
+            pygame.draw.polygon(surface, fill_color, points)
+            pygame.draw.polygon(surface, border_color, points, 2)
 
-        small_font = pygame.font.SysFont("malgungothic", 18)
+        # 주사위 종류에 따른 색(이미지 대신)
+        def get_dice_color(spec):
+            from unit import DiceKind
+            if spec.kind == DiceKind.ATTACK:
+                # 공격: 붉은 계열
+                return (210, 80, 80)
+            else:
+                # 방어/회피: 푸른 계열
+                return (80, 130, 220)
 
-        kind = entry.get("kind")
-        idx = entry.get("dice_index", 0)
+        # 한 유닛 머리 위 UI를 그리는 함수
+        def draw_side(unit, page, rolled_value, align_left: bool):
+            if unit is None or page is None or rolled_value is None:
+                return
 
+            specs = page.dice_list
+            if not specs:
+                return
+
+            # 현재 / 남은 주사위
+            if 0 <= dice_index < len(specs):
+                cur_spec = specs[dice_index]
+                remaining_specs = specs[dice_index + 1:]
+            else:
+                cur_spec = specs[-1]
+                remaining_specs = []
+
+            # ------------------------------
+            # 1) 좌표 설정 (라오루 스타일)
+            # ------------------------------
+            head_x = unit.rect.centerx
+            head_y = unit.rect.top
+
+            # big dice는 캐릭터 머리 바로 위
+            big_cx = head_x
+            big_cy = head_y - 55
+
+            small_r = 14
+            big_r = 22
+
+            # ------------------------------
+            # 2) 방향 기반 box anchor
+            # ------------------------------
+            BOX_W = 220
+            BOX_H = 110
+
+            if align_left:
+                # 아군: big dice가 박스 왼쪽 가장자리에 가까움
+                box_left = big_cx - 30  # big dice와 박스 간격 작게
+                box_top = big_cy - BOX_H // 2
+            else:
+                # 적군: big dice가 박스 오른쪽 가장자리에 가까움
+                box_left = big_cx - (BOX_W - 30)  # big dice는 박스 오른쪽으로 붙음
+                box_top = big_cy - BOX_H // 2
+
+            box_rect = pygame.Rect(box_left, box_top, BOX_W, BOX_H)
+
+            # 박스 배경
+            pygame.draw.rect(surface, (20, 20, 40), box_rect)
+            pygame.draw.rect(surface, (220, 220, 240), box_rect, 2)
+
+            # ------------------------------
+            # 3) big dice 그리기
+            # ------------------------------
+            color = get_dice_color(cur_spec)
+            draw_hex((big_cx, big_cy), big_r, color, (0, 0, 0))
+
+            # 값
+            val_surf = font.render(str(rolled_value), True, (255, 255, 255))
+            surface.blit(val_surf, val_surf.get_rect(center=(big_cx, big_cy)))
+
+            # 범위(min~max)
+            small_font = pygame.font.SysFont("malgungothic", 16)
+            rtext = f"{cur_spec.min_value}~{cur_spec.max_value}"
+            rsurf = small_font.render(rtext, True, (255, 255, 255))
+            surface.blit(rsurf, rsurf.get_rect(midbottom=(big_cx, big_cy - big_r - 3)))
+
+            # ------------------------------
+            # 4) 책장 이름
+            #   - 아군: 사용 주사위의 오른쪽 위
+            #   - 적군: 사용 주사위의 왼쪽 위
+            # ------------------------------
+            name_surf = font.render(page.name, True, (255, 255, 255))
+            name_rect = name_surf.get_rect()
+
+            if align_left:
+                # 아군: 큰 주사위 기준 오른쪽 위
+                name_rect.midleft = (big_cx + big_r + 6, big_cy - big_r - 6)
+            else:
+                # 적군: 큰 주사위 기준 왼쪽 위
+                name_rect.midright = (big_cx - big_r - 6, big_cy - big_r - 6)
+
+            surface.blit(name_surf, name_rect)
+
+            # ------------------------------
+            # 5) 남은 주사위 배치 (오른쪽 / 왼쪽)
+            # ------------------------------
+            if align_left:
+                # 아군: 남은 주사위는 오른쪽으로
+                start_x = big_cx + big_r + 20
+                dir = 1
+            else:
+                # 적군: 남은 주사위는 왼쪽으로
+                start_x = big_cx - big_r - 20
+                dir = -1
+
+            for i, spec in enumerate(remaining_specs):
+                cx = start_x + dir * (i * (small_r * 2 + 12))
+                cy = big_cy + 26
+
+                c = get_dice_color(spec)
+                draw_hex((cx, cy), small_r, c, (0, 0, 0))
+
+                # 범위
+                rt = f"{spec.min_value}~{spec.max_value}"
+                r_s = small_font.render(rt, True, (255, 255, 255))
+                surface.blit(r_s, r_s.get_rect(midbottom=(cx, cy - small_r - 2)))
+
+        # ATTENTION_LAST 에서 정보 꺼내기
         unit_a = entry.get("unit_a")
         unit_b = entry.get("unit_b")
         page_a = entry.get("page_a")
@@ -2300,96 +2494,17 @@ def run_battle(screen, stage_code):
         val_a = entry.get("val_a")
         val_b = entry.get("val_b")
 
-        # 남은 주사위 텍스트를 만드는 작은 헬퍼
-        def build_remaining_lines(page, used_index):
-            if page is None:
-                return []
-            lines = []
-            for spec in page.dice_list[used_index + 1:]:
-                if spec.kind == DiceKind.ATTACK:
-                    dtype = DAMAGE_NAME_KO.get(spec.damage_type, "")
-                    name = dtype
-                elif spec.kind == DiceKind.DEFENSE:
-                    name = "방어"
-                else:
-                    name = "회피"
-                lines.append(f"{name} {spec.min_value}~{spec.max_value}")
-            return lines
+        # 화면 가운데 x 좌표
+        screen_mid = surface.get_width() // 2
 
-        # 한 쪽 박스를 그리는 헬퍼
-        def draw_side_box(x, y, unit, page, rolled_val, is_left_side: bool):
-            if unit is None or page is None or rolled_val is None:
-                return
+        # 캐릭터의 실제 위치를 기준으로 UI 방향 결정
+        if unit_a is not None and page_a is not None and val_a is not None:
+            align_a = (unit_a.rect.centerx < screen_mid)  # 왼쪽에 있으면 왼쪽 캐릭터 스타일
+            draw_side(unit_a, page_a, val_a, align_left=align_a)
 
-            box_w_side = 260
-            box_h_side = 110
-
-            pygame.draw.rect(surface, EMOTION_BG,
-                             (x, y, box_w_side, box_h_side), border_radius=8)
-            pygame.draw.rect(surface, EMOTION_BORDER,
-                             (x, y, box_w_side, box_h_side), 2, border_radius=8)
-
-            side_text = "적" if not unit.is_ally else "아군"
-            title = font.render(f"{side_text} 주사위", True, EMOTION_TEXT)
-            surface.blit(title, (x + 8, y + 6))
-
-            # 굴린 주사위 정보
-            if 0 <= idx < len(page.dice_list):
-                spec = page.dice_list[idx]
-                if spec.kind == DiceKind.ATTACK:
-                    dtype = DAMAGE_NAME_KO.get(spec.damage_type, "")
-                    name = dtype
-                elif spec.kind == DiceKind.DEFENSE:
-                    name = "방어"
-                else:
-                    name = "회피"
-
-                line = f"굴린 주사위: {name} {spec.min_value}~{spec.max_value} → {rolled_val}"
-                t = small_font.render(line, True, EMOTION_TEXT)
-                surface.blit(t, (x + 8, y + 32))
-
-            # 남은 주사위 리스트
-            remain_lines = build_remaining_lines(page, idx)
-            if remain_lines:
-                label = small_font.render("남은 주사위:", True, EMOTION_TEXT)
-                surface.blit(label, (x + 8, y + 56))
-                yy = y + 56 + 20
-                for line in remain_lines[:3]:  # 너무 길어지지 않게 3줄만
-                    t = small_font.render(line, True, EMOTION_TEXT)
-                    surface.blit(t, (x + 18, yy))
-                    yy += 20
-
-        # ----- 왼쪽(적 감정) 아래: 적 쪽 정보 우선 -----
-        left_x = margin
-        left_y = margin + box_h + gap
-        # unit_a / unit_b 중에서 적인 쪽을 왼쪽에, 아군인 쪽을 오른쪽에 배치
-        # (합공이면 서로 다를 수 있음, 일방공이면 한쪽만 있음)
-
-        # 기본은 "적 = not is_ally"
-        left_unit = None
-        left_page = None
-        left_val = None
-        right_unit = None
-        right_page = None
-        right_val = None
-
-        if unit_a and not unit_a.is_ally:
-            left_unit, left_page, left_val = unit_a, page_a, val_a
-        elif unit_b and not unit_b.is_ally:
-            left_unit, left_page, left_val = unit_b, page_b, val_b
-
-        if unit_a and unit_a.is_ally:
-            right_unit, right_page, right_val = unit_a, page_a, val_a
-        elif unit_b and unit_b.is_ally:
-            right_unit, right_page, right_val = unit_b, page_b, val_b
-
-        draw_side_box(left_x, left_y, left_unit, left_page, left_val, True)
-
-        # ----- 오른쪽(아군 감정) 아래: 아군 쪽 정보 -----
-        right_box_x = width - 260 - margin
-        right_box_y = margin + box_h + gap
-        draw_side_box(right_box_x, right_box_y, right_unit, right_page, right_val, False)
-
+        if unit_b is not None and page_b is not None and val_b is not None:
+            align_b = (unit_b.rect.centerx < screen_mid)
+            draw_side(unit_b, page_b, val_b, align_left=align_b)
 
     def draw_enemy_hover_page_ui(surface, font, hovered_speed_unit, hovered_speed_token_index):
         if hovered_speed_unit is None or hovered_speed_unit.is_ally:
@@ -2449,7 +2564,7 @@ def run_battle(screen, stage_code):
         # 상수: 각 phase 시간 (ms)
         APPROACH_TIME = 600  # 0.6초 동안 앞으로 이동 (기존 300보다 느리게)
         DICE_TIME = 200  # 그대로
-        HOLD_TIME = 200  # 그대로
+        HOLD_TIME = 400  # 그대로
         RETURN_TIME = 600  # 0.6초 동안 제자리로 복귀 (기존 400보다 느리게)
 
         # 아직 귀환 phase 전에, 개별 action들을 처리하는 부분
@@ -2527,6 +2642,7 @@ def run_battle(screen, stage_code):
                         dist = (dx * dx + dy * dy) ** 0.5 or 1.0
 
                         # fast → slow 방향 단위벡터
+                        # fast → slow 방향 단위벡터
                         dir_x = dx / dist
                         dir_y = dy / dist
 
@@ -2535,21 +2651,26 @@ def run_battle(screen, stage_code):
                         center_x = fx0 + dx * ratio
                         center_y = fy0 + dy * ratio
 
-                        # 둘 사이에 남길 최소 간격
-                        GAP = 80.0  # 필요하면 60~100 사이로 조정해봐
-                        half_gap = GAP / 2.0
+                        # ⚙ 중심점 기준으로
+                        #   왼쪽에서 오는 유닛은 약간 왼쪽,
+                        #   오른쪽에서 오는 유닛은 약간 오른쪽 위치에서 멈추게 한다.
+                        OFFSET = 60.0  # 두 유닛 사이 간격의 절반 정도
 
-                        # 너무 가까우면 GAP를 거리의 절반보다 크게 쓰지 않도록 보정
-                        if half_gap * 2.0 > dist:
-                            half_gap = dist * 0.49
+                        # fast의 시작 x 좌표가 중심점 왼쪽/오른쪽인지에 따라 타겟 x 결정
+                        if fx0 <= center_x:
+                            fast_target_x = center_x - OFFSET
+                        else:
+                            fast_target_x = center_x + OFFSET
 
-                        # fast가 멈출 위치: 중심점에서 half_gap 만큼 뒤로
-                        fast_target_x = center_x - dir_x * half_gap
-                        fast_target_y = center_y - dir_y * half_gap
+                        # slow도 동일 규칙
+                        if sx0 <= center_x:
+                            slow_target_x = center_x - OFFSET
+                        else:
+                            slow_target_x = center_x + OFFSET
 
-                        # slow가 멈출 위치: 중심점에서 half_gap 만큼 앞으로
-                        slow_target_x = center_x + dir_x * half_gap
-                        slow_target_y = center_y + dir_y * half_gap
+                        # y는 중심 y 근처로 통일
+                        fast_target_y = center_y
+                        slow_target_y = center_y
 
                         anim_state["approach_base"] = {
                             "mode": "clash",
@@ -2578,24 +2699,66 @@ def run_battle(screen, stage_code):
                     slow.current_pos[1] = sy0 + (sty - sy0) * t
 
 
+
+
                 else:
-                    # 일방공: 공격자가 피격자 앞으로 이동
+
+                    # 일방공: 공격자/피격자가 둘 다 9:1 지점 기준으로 좌우로 벌어지도록 이동
                     attacker, defender = a, b
-                    dx0, dy0 = defender.current_pos
-                    ax0, ay0 = attacker.current_pos
 
-                    dir_x = dx0 - ax0
-                    dir_y = dy0 - ay0
-                    length = max((dir_x ** 2 + dir_y ** 2) ** 0.5, 1.0)
-                    dir_x /= length
-                    dir_y /= length
+                    # 이번 action에서 한 번만 시작/목표 위치를 계산해서 캐시에 넣어 둔다
+                    if "approach_base" not in anim_state:
+                        ax0 = float(attacker.current_pos[0])
+                        ay0 = float(attacker.current_pos[1])
+                        dx0 = float(defender.current_pos[0])
+                        dy0 = float(defender.current_pos[1])
 
-                    OFFSET = 60
-                    target_x = dx0 - dir_x * OFFSET
-                    target_y = dy0 - dir_y * OFFSET
+                        vx = dx0 - ax0
+                        vy = dy0 - ay0
+                        dist = (vx * vx + vy * vy) ** 0.5 or 1.0
 
-                    attacker.current_pos[0] = ax0 + (target_x - ax0) * t
-                    attacker.current_pos[1] = ay0 + (target_y - ay0) * t
+                        # 공격자 → 피격자 방향으로 90% 지점 (9:1)
+                        ratio = 0.9
+                        center_x = ax0 + vx * ratio
+                        center_y = ay0 + vy * ratio
+
+                        # 9:1 지점을 기준으로, 한 명은 약간 왼쪽 / 한 명은 약간 오른쪽에 서게 한다
+                        OFFSET = 90.0  # 두 유닛 사이 간격의 절반 (기존보다 넓게)
+
+                        if ax0 <= center_x:
+                            atk_target_x = center_x - OFFSET
+                        else:
+                            atk_target_x = center_x + OFFSET
+
+                        if dx0 <= center_x:
+                            def_target_x = center_x - OFFSET
+                        else:
+                            def_target_x = center_x + OFFSET
+
+                        atk_target_y = center_y
+                        def_target_y = center_y
+
+                        anim_state["approach_base"] = {
+                            "mode": "one_sided",
+                            "attacker": attacker,
+                            "defender": defender,
+                            "atk_start": (ax0, ay0),
+                            "def_start": (dx0, dy0),
+                            "atk_target": (atk_target_x, atk_target_y),
+                            "def_target": (def_target_x, def_target_y),
+                        }
+
+                    base = anim_state["approach_base"]
+                    ax0, ay0 = base["atk_start"]
+                    dx0, dy0 = base["def_start"]
+                    atk_target_x, atk_target_y = base["atk_target"]
+                    def_target_x, def_target_y = base["def_target"]
+
+                    attacker.current_pos[0] = ax0 + (atk_target_x - ax0) * t
+                    attacker.current_pos[1] = ay0 + (atk_target_y - ay0) * t
+
+                    defender.current_pos[0] = dx0 + (def_target_x - dx0) * t
+                    defender.current_pos[1] = dy0 + (def_target_y - dy0) * t
 
                 # approach 시간이 끝나면 dice phase로
                 if anim_state["timer"] >= APPROACH_TIME:
@@ -2631,6 +2794,10 @@ def run_battle(screen, stage_code):
                     anim_state["phase"] = "approach"
                     anim_state["timer"] = 0.0
                     anim_state["resolved"] = False
+
+                    # 🔹 방금 액션의 주사위 표시 제거
+                    clear_attention_last()
+                    clear_focus_info()
                 return
 
         # 4) 모든 action 처리 후: 전체 귀환(return) 연출
@@ -2655,6 +2822,10 @@ def run_battle(screen, stage_code):
                         u.current_pos = [hx, hy]
                         u.rect.centerx = int(hx)
                         u.rect.centery = int(hy)
+
+                # 🔹 주사위/포커스 표시 완전히 초기화
+                clear_attention_last()
+                clear_focus_info()
 
                 # 연출 모드 종료
                 anim_state["mode"] = False
@@ -2759,6 +2930,8 @@ def run_battle(screen, stage_code):
         # 창이 '응답 없음' 안 뜨게 이벤트 펌프
         pygame.event.pump()
 
+    global RENDER_FOCUS_SCENE
+    RENDER_FOCUS_SCENE = render_focus_scene
 
     # --- 주사위 1회 연출용: 캐릭터 슬라이드 이동 ---
 
@@ -2870,7 +3043,83 @@ def run_battle(screen, stage_code):
             return
         play_focus_motion(attacker, defender)
 
+    def draw_zoom_focus_pair(
+            surface,
+            unit_a,
+            unit_b,
+            zoom=1.2,
+            vertical_offset=80,
+            shake_intensity=0,
+    ):
+        """
+        연출 모드일 때, 현재 주목 대상이 되는 두 유닛 주변을
+        화면 전체를 확대(줌)해서 보여주는 함수.
 
+        - unit_a, unit_b 중심의 중간 지점을 기준으로 확대하되,
+          그 지점을 vertical_offset 픽셀만큼 위로 올려서 잡는다.
+        - 확대 후에는 화면 가장자리에 '안 늘어난 화면'이 보이지 않도록
+          offset을 화면 안으로 클램프(clamp)한다.
+        - shake_intensity > 0이면 카메라가 약간 흔들리는 효과를 준다.
+        """
+        if unit_a is None or unit_b is None:
+            return
+
+        w, h = surface.get_size()
+
+        # 현재 그려져 있는 화면을 그대로 복사
+        base = surface.copy()
+
+        # 확대된 크기 계산
+        zoom_w = int(w * zoom)
+        zoom_h = int(h * zoom)
+        if zoom_w <= 0 or zoom_h <= 0:
+            return
+
+        # 부드러운 확대
+        zoomed = pygame.transform.smoothscale(base, (zoom_w, zoom_h))
+
+        # 두 유닛 중심점의 중간 지점을 "카메라 기준점"으로 사용
+        cx = (unit_a.rect.centerx + unit_b.rect.centerx) / 2.0
+        cy = (unit_a.rect.centery + unit_b.rect.centery) / 2.0
+
+        # 🔹 기준점을 위로 조금 올리기 (캐릭터가 만나는 지점보다 위쪽을 더 보여주기)
+        cy -= vertical_offset
+
+        # 확대된 화면에서 이 기준점의 좌표
+        zx = cx * zoom
+        zy = cy * zoom
+
+        # 이 점이 화면 정중앙에 오도록 offset 계산
+        offset_x = int(w / 2 - zx)
+        offset_y = int(h / 2 - zy)
+
+        # 🔹 카메라 흔들림(Shake) 추가: offset에 랜덤으로 ±shake_intensity 픽셀 더해줌
+        if shake_intensity > 0:
+            offset_x += random.randint(-shake_intensity, shake_intensity)
+            offset_y += random.randint(-shake_intensity, shake_intensity)
+
+        # 🔹 offset 클램프:
+        #  - 왼쪽/위쪽은 화면 밖(음수)로 나가도 되지만,
+        #  - 오른쪽/아래쪽 끝이 최소한 화면을 다 덮도록 보정해준다.
+        #
+        #   offset_x <= 0
+        #   offset_x + zoom_w >= w  =>  offset_x >= w - zoom_w
+        #
+        #   그래서 offset_x 는 [w - zoom_w, 0] 범위 안으로 clamp.
+        #
+        if zoom_w > w:
+            offset_x = max(w - zoom_w, min(0, offset_x))
+        else:
+            # 확대 비율이 1.0 근처라 화면보다 작아질 일은 거의 없지만 안전용
+            offset_x = (w - zoom_w) // 2
+
+        if zoom_h > h:
+            offset_y = max(h - zoom_h, min(0, offset_y))
+        else:
+            offset_y = (h - zoom_h) // 2
+
+        # 확대된 화면을 덮어쓰기
+        surface.blit(zoomed, (offset_x, offset_y))
 
     def draw_focus_info_ui(surface, font):
         """감정단계 아래에 현재 주목 중인 주사위 값(간단 버전)을 표시한다."""
@@ -3410,6 +3659,14 @@ def run_battle(screen, stage_code):
                 hovered_speed_unit, hovered_speed_token_index
             )
             draw_hand_cards(screen, font, hand_owner, hand_token_index, selected_unit, mouse_pos)
+
+            # 🔹 연출 모드일 때는 현재 합/일방에 참여 중인 두 캐릭터를 중심으로 화면을 확대해서 보여준다.
+            if (
+                    anim_state["mode"]
+                    and anim_state.get("attacker") is not None
+                    and anim_state.get("defender") is not None
+            ):
+                draw_zoom_focus_pair(screen, anim_state["attacker"], anim_state["defender"], zoom=1.2)
 
         # ✅ 마지막에 한 번만 flip
         pygame.display.flip()
