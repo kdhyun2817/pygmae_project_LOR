@@ -342,48 +342,6 @@ def apply_dice_trigger(dice: Dice, user, target, trigger_type):
         apply_effect(effect, user, target)
 
 
-
-
-# def use_page(page: CombatPage, user, allies, enemies):
-#     # 코스트 체크
-#     if not user.spend_light(page.cost):
-#         print("빛 부족:", page.name)
-#         return
-#
-#     # 사용 효과
-#     if page.use_effect:
-#         t = page.use_effect.target
-#         if t == EffectTarget.SELF:
-#             apply_effect(page.use_effect, user, user)
-#         elif t == EffectTarget.ALLY_ALL:
-#             for a in allies:
-#                 apply_effect(page.use_effect, user, a)
-#         # 필요하면 ENEMY_ALL 등 추가
-#
-#     # 주사위 생성해서 실제 공격 (간단 버전)
-#     dice_objs = []
-#     for spec in page.dice_list:
-#         d = Dice(
-#             owner=user,
-#             kind=spec.kind,
-#             min_value=spec.min_value,
-#             max_value=spec.max_value,
-#             damage_type=spec.damage_type,
-#         )
-#         # spec.effect는 나중에 on_hit / on_clash_win에서 쓰면 됨
-#         dice_objs.append((d, spec.effect))
-#
-#     # 일단 테스트용으로 첫 적에게 그냥 공격
-#     target = next(e for e in enemies if not e.is_dead and not e.is_escaped)
-#     for d, eff in dice_objs:
-#         val = d.roll()
-#         if d.kind == DiceKind.ATTACK:
-#             dmg_type = d.damage_type or DamageType.SLASH
-#             target.take_damage(val, dmg_type)
-#             print(f"{page.name} 공격 주사위 {val} → 적 HP {target.hp:.1f}")
-#             # 추후: ON_HIT 효과 여기서 eff.trigger == EffectTrigger.ON_HIT이면 적용
-
-
 def build_dice_summary_lines(page: CombatPage):
     """
     CombatPage → ["참격 1~4", "방어 2~6", "회피 1~14"] 같은 리스트로 변환
