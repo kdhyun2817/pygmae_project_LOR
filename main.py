@@ -12,7 +12,11 @@ SCREEN_HEIGHT = 720
 
 def main():
     pygame.init()
-    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SCALED)
+    # screen = pygame.display.set_mode(
+    #     (SCREEN_WIDTH, SCREEN_HEIGHT),
+    #     pygame.FULLSCREEN | pygame.SCALED
+    # )
     pygame.display.set_caption("Project LOR-like")
 
     # 1) 인트로 영상 재생 (로고 → 게임 인트로)

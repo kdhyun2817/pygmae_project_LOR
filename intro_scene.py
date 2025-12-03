@@ -48,5 +48,4 @@ def _play_video(screen, filename, allow_skip=True):
 
 def run_intro(screen):
     """게임 시작 시 호출: 로고 → 인트로 영상 순서대로 재생."""
-    _play_video(screen, "LogoIntro.mp4", allow_skip=True)
-    _play_video(screen, "GameIntro.mp4", allow_skip=True)
+    # _play_video(screen, "LogoIntro.mp4", allow_skip=True)

@@ -1,71 +1,408 @@
 # menu_scene.py
+import os
+import cv2
 import pygame
-from unit import WHITE, PANEL_BG
+import math
 
-MENU_ITEMS = ["게임 시작", "설정", "나가기"]
+from unit import WHITE
+
+
+# ----------------------------
+# 메뉴 리소스 정의
+# ----------------------------
+
+MENU_ITEMS = [
+    {"key": "start",    "label": "시작하기", "icon": "Icon_Start.png"},
+    {"key": "continue", "label": "이어하기", "icon": "Icon_Continue.png"},
+    {"key": "option",   "label": "설정",     "icon": "Icon_Option.png"},
+    {"key": "exit",     "label": "끝내기",   "icon": "Icon_Exit.png"},
+]
+
+
+def _find_menu_dir():
+    """현재 파일 기준으로 menu 폴더 경로 반환."""
+    base_dir = os.path.dirname(__file__)
+    menu_dir = os.path.join(base_dir, "menu")
+    return menu_dir
+
+
+def _open_background_video(menu_dir):
+    """
+    menu 폴더 안에서 동영상 파일(mp4 등)을 찾아 첫 번째 것을 연다.
+    동영상이 없으면 None을 반환한다.
+    """
+    if not os.path.isdir(menu_dir):
+        return None
+
+    video_exts = (".mp4", ".avi", ".mov", ".mkv")
+    candidates = [
+        f for f in os.listdir(menu_dir)
+        if f.lower().endswith(video_exts)
+    ]
+    if not candidates:
+        return None
+
+    candidates.sort()
+    path = os.path.join(menu_dir, candidates[0])
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        print(f"[메뉴] 동영상을 열 수 없습니다: {path}")
+        return None
+
+    print(f"[메뉴] 배경 동영상 사용: {path}")
+    return cap
+
+
+def _read_video_frame_as_surface(cap, screen_size):
+    """cv2 VideoCapture에서 한 프레임을 읽어 pygame Surface로 변환."""
+    ret, frame = cap.read()
+    if not ret:
+        # 끝까지 재생했다면 처음으로 루프
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        ret, frame = cap.read()
+        if not ret:
+            return None
+
+    w, h = screen_size
+    frame = cv2.resize(frame, (w, h))
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    surf = pygame.image.frombuffer(frame.tobytes(), (w, h), "RGB")
+    return surf
+
+# ----------------------------
+# 타이틀 로고 (TitleLogo.png) 한 장만 사용하는 코드
+# ----------------------------
+
+_TITLE_LOGO_SURF = None
+
+
+def _draw_title_logo(screen, menu_dir):
+    """
+    menu/TitleLogo.png 이미지를 불러와서
+    화면 왼쪽 위에 적당한 크기로 띄운다.
+    """
+    global _TITLE_LOGO_SURF
+
+    screen_w, screen_h = screen.get_size()
+
+    # 한 번만 로딩해서 캐시에 저장
+    if _TITLE_LOGO_SURF is None:
+        logo_path = os.path.join(menu_dir, "TitleLogo.png")
+        if not os.path.isfile(logo_path):
+            print(f"[메뉴] TitleLogo.png 를 찾을 수 없습니다: {logo_path}")
+            return
+
+        try:
+            img = pygame.image.load(logo_path).convert_alpha()
+        except Exception as e:
+            print(f"[메뉴] TitleLogo.png 로드 실패: {e}")
+            return
+
+        # 너무 크거나 너무 작지 않게 화면 비율에 맞춰 스케일
+        # (화면 가로의 60% 정도가 최대)
+        max_w = int(screen_w * 0.60)
+        scale = 1.0
+        if img.get_width() > max_w:
+            scale = max_w / img.get_width()
+
+        if scale != 1.0:
+            new_size = (int(img.get_width() * scale),
+                        int(img.get_height() * scale))
+            img = pygame.transform.smoothscale(img, new_size)
+
+        _TITLE_LOGO_SURF = img
+
+    # 캐시된 로고 사용
+    logo = _TITLE_LOGO_SURF
+    rect = logo.get_rect()
+
+    # 화면 왼쪽 위에 살짝 내려온 위치에 배치 (라오루 느낌)
+    rect.topleft = (
+        int(screen_w * 0.29),  # 약간 오른쪽
+        0  # 위에 딱 붙이기
+    )
+
+    screen.blit(logo, rect)
+
+def _action_from_key(key: str):
+    """메뉴 key를 main 루프가 사용하는 문자열로 변환."""
+    if key == "start":
+        return "START"
+    if key == "continue":
+        return "CONTINUE"
+    if key == "option":
+        return "OPTION"
+    if key == "exit":
+        return "EXIT"
+    # 혹시 모르는 기본값
+    return "EXIT"
+
 
 
 def run_menu(screen):
+    """
+    메인 메뉴 화면.
+    - 뒤쪽에는 menu 폴더의 동영상이 루프 재생.
+    - 그 위에 TitleInk 전체 화면, 그 위에 UITitletextbg를 덮어씌움.
+    - 왼쪽 위에는 TitleLogo.png 한 장을 배치.
+    - 중앙 근처에 4개의 아이콘을 2×2로 배치.
+    - 아이콘에 마우스를 올리면 Image_AlarmPopup.png가 옆으로 튀어나오며
+      한글 라벨(시작하기/이어하기/설정/끝내기)을 표시.
+    """
+    pygame.mouse.set_visible(True)
     clock = pygame.time.Clock()
-    font_title = pygame.font.SysFont("malgungothic", 52)
-    font_item = pygame.font.SysFont("malgungothic", 32)
 
-    selected = 0
+    screen_w, screen_h = screen.get_size()
+    menu_dir = _find_menu_dir()
+
+    # 팝업용 폰트 (조금 크게)
+    font_label = pygame.font.SysFont("malgungothic", 34)
+
+    # TitleInk 전체 화면 오버레이
+    title_ink = None
+    for name in ("TitleInk.png", "titleink.png", "UITitleInk.png"):
+        title_path = os.path.join(menu_dir, name)
+        if os.path.isfile(title_path):
+            try:
+                img = pygame.image.load(title_path).convert_alpha()
+                title_ink = pygame.transform.smoothscale(img, (screen_w, screen_h))
+            except Exception as e:
+                print(f"[메뉴] {name} 로드 실패: {e}")
+            break
+
+    # 텍스트 배경 오버레이 이미지 (UITitletextbg)
+    bg_overlay = None
+    overlay_path = os.path.join(menu_dir, "UITitletextbg.png")
+    if os.path.isfile(overlay_path):
+        try:
+            img = pygame.image.load(overlay_path).convert_alpha()
+            bg_overlay = pygame.transform.smoothscale(img, (screen_w, screen_h))
+        except Exception as e:
+            print(f"[메뉴] UITitletextbg.png 로드 실패: {e}")
+
+    # 툴팝 배경 (Image_AlarmPopup)
+    popup_bg = None
+    popup_path = os.path.join(menu_dir, "Image_AlarmPopup.png")
+    if os.path.isfile(popup_path):
+        try:
+            popup_bg = pygame.image.load(popup_path).convert_alpha()
+        except Exception as e:
+            print(f"[메뉴] Image_AlarmPopup.png 로드 실패: {e}")
+
+    # ----------------------------
+    # 아이콘 로드 및 위치 계산 (퍼센트 배치)
+    # ----------------------------
+    icons = []
+    loaded_surfs = []
+
+    for item in MENU_ITEMS:
+        icon_path = os.path.join(menu_dir, item["icon"])
+        try:
+            surf = pygame.image.load(icon_path).convert_alpha()
+        except Exception as e:
+            print(f"[메뉴] 아이콘 로드 실패 ({icon_path}): {e}")
+            surf = pygame.Surface((120, 120), pygame.SRCALPHA)
+            pygame.draw.polygon(
+                surf,
+                (255, 200, 0),
+                [(10, 10), (110, 10), (110, 110), (10, 110)],
+                3,
+            )
+
+        # 아이콘 크기 축소 (지금 쓰던 크기 유지)
+        base_scale = 0.3
+        new_size = (
+            int(surf.get_width() * base_scale),
+            int(surf.get_height() * base_scale),
+        )
+        surf = pygame.transform.smoothscale(surf, new_size)
+
+        loaded_surfs.append((item, surf))
+
+    # 화면 가로/세로에 대한 비율로 아이콘 위치 지정
+    # 0: 시작하기, 1: 이어하기, 2: 설정, 3: 끝내기
+    icon_pos_ratios = [
+        (0.28, 0.33),  # 시작하기  (좌상)
+        (0.75, 0.45),  # 이어하기 (우상)
+        (0.27, 0.67),  # 설정     (좌하)
+        (0.70, 0.75),  # 끝내기   (우하)
+    ]
+
+    for idx, (item, surf) in enumerate(loaded_surfs):
+        rect = surf.get_rect()
+
+        if idx < len(icon_pos_ratios):
+            rx, ry = icon_pos_ratios[idx]
+        else:
+            # 혹시 메뉴가 늘어났을 때를 위한 안전장치 (중앙 아래로 떨어뜨려 배치)
+            rx, ry = 0.5, 0.5 + 0.1 * idx
+
+        cx = int(screen_w * rx)
+        cy = int(screen_h * ry)
+        rect.center = (cx, cy)
+
+        icons.append(
+            {
+                "key": item["key"],
+                "label": item["label"],
+                "surf": surf,
+                "rect": rect,
+            }
+        )
+
+    # 배경 동영상 열기
+    cap = _open_background_video(menu_dir)
+
+    selected_idx = 0
     running = True
 
     while running:
+        dt = clock.tick(60) / 1000.0  # dt는 지금은 안 쓰지만 남겨둠
+
+        # ----- 배경 그리기 -----
+        if cap is not None:
+            frame_surf = _read_video_frame_as_surface(cap, (screen_w, screen_h))
+            if frame_surf is not None:
+                screen.blit(frame_surf, (0, 0))
+            else:
+                screen.fill((0, 0, 0))
+        else:
+            screen.fill((0, 0, 0))
+
+        # 1) 타이틀 먼저
+        _draw_title_logo(screen, menu_dir)
+
+        # 2) 그 위에 잉크/텍스트 오버레이
+        if title_ink is not None:
+            screen.blit(title_ink, (0, 0))
+        if bg_overlay is not None:
+            screen.blit(bg_overlay, (0, 0))
+
+        # ----- 입력 처리 -----
+        mouse_pos = pygame.mouse.get_pos()
+        hovered_idx = None
+        for i, info in enumerate(icons):
+            if info["rect"].collidepoint(mouse_pos):
+                hovered_idx = i
+                break
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                if cap is not None:
+                    cap.release()
                 return "EXIT"
 
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
+                if event.key in (pygame.K_UP, pygame.K_w):
+                    selected_idx = (selected_idx - 1) % len(icons)
+                elif event.key in (pygame.K_DOWN, pygame.K_s):
+                    selected_idx = (selected_idx + 1) % len(icons)
+                elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    key = icons[selected_idx]["key"]
+                    if cap is not None:
+                        cap.release()
+                    return _action_from_key(key)
+                elif event.key == pygame.K_ESCAPE:
+                    if cap is not None:
+                        cap.release()
                     return "EXIT"
 
-                if event.key in (pygame.K_UP, pygame.K_w):
-                    selected = (selected - 1) % len(MENU_ITEMS)
-                elif event.key in (pygame.K_DOWN, pygame.K_s):
-                    selected = (selected + 1) % len(MENU_ITEMS)
-                elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                    item = MENU_ITEMS[selected]
-                    if item == "게임 시작":
-                        return "START"
-                    elif item == "설정":
-                        # TODO: 옵션 메뉴 추가할 때 여기서 다른 씬으로 넘기면 됨
-                        print("설정 메뉴는 아직 구현되지 않았습니다.")
-                    elif item == "나가기":
-                        return "EXIT"
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if hovered_idx is not None:
+                    key = icons[hovered_idx]["key"]
+                    if cap is not None:
+                        cap.release()
+                    return _action_from_key(key)
 
-        # ----- 화면 그리기 -----
-        screen.fill(PANEL_BG)
+        if hovered_idx is not None:
+            selected_idx = hovered_idx
 
-        # 제목
-        title_surf = font_title.render("Project LOR-like", True, WHITE)
-        title_rect = title_surf.get_rect(center=(screen.get_width() // 2, 150))
-        screen.blit(title_surf, title_rect)
+        # ----- 아이콘 + 팝업 그리기 -----
+        for i, info in enumerate(icons):
+            surf = info["surf"]
+            base_rect = info["rect"]
+            rect = base_rect.copy()
 
-        # 메뉴 항목
-        cx = screen.get_width() // 2
-        start_y = 280
-        gap = 60
+            # 선택/호버된 아이콘이면 살짝 키우기
+            is_hot = i == selected_idx
+            if is_hot:
+                scale = 1.05
+                new_size = (int(rect.width * scale), int(rect.height * scale))
+                scaled = pygame.transform.smoothscale(surf, new_size)
+                rect = scaled.get_rect(center=rect.center)
+                screen.blit(scaled, rect)
+            else:
+                screen.blit(surf, rect)
 
-        for i, text in enumerate(MENU_ITEMS):
-            color = WHITE
-            surf = font_item.render(text, True, color)
-            rect = surf.get_rect(center=(cx, start_y + i * gap))
+            # ----- 팝업 -----
+            if popup_bg is not None and i == hovered_idx:
+                base_popup = popup_bg
 
-            if i == selected:
-                # 선택된 항목에 밑줄 / 강조 박스
-                pygame.draw.rect(
-                    screen,
-                    (200, 200, 220),
-                    rect.inflate(30, 10),
-                    width=2,
-                )
+                # 1) 팝업이 향할 "목표 방향" 계산
+                icon_cx, icon_cy = rect.center
 
-            screen.blit(surf, rect)
+                if i < len(icons) - 1:
+                    # 다음 아이콘 방향으로
+                    nx, ny = icons[i + 1]["rect"].center
+                    target_cx, target_cy = nx, ny
+                elif len(icons) >= 3:
+                    # 마지막 아이콘: 2번→3번(인덱스 1→2)의 기울기와 동일한 방향
+                    ax, ay = icons[1]["rect"].center
+                    bx, by = icons[2]["rect"].center
+                    dir_x = bx - ax
+                    dir_y = by - ay
+                    target_cx = icon_cx + dir_x
+                    target_cy = icon_cy + dir_y
+                else:
+                    # 아이콘이 2개 이하인 특수 케이스: 그냥 오른쪽
+                    target_cx = icon_cx + rect.width
+                    target_cy = icon_cy
+
+                dx = target_cx - icon_cx
+                dy = target_cy - icon_cy
+                dist = math.hypot(dx, dy)
+                if dist < 1:
+                    dist = rect.width  # 안전장치
+
+                # 2) 팝업 크기: 아이콘→다음 아이콘까지 거의 닿을 정도 길이
+                aspect = base_popup.get_width() / base_popup.get_height()
+                popup_w = int(dist * 0.95)  # 두 아이콘 사이 거리의 95%
+                popup_h = max(int(popup_w / aspect), int(rect.height * 0.6))
+                popup = pygame.transform.smoothscale(base_popup, (popup_w, popup_h))
+
+                # 3) 각도 계산
+                angle_rad = math.atan2(dy, dx)
+                angle_deg = math.degrees(angle_rad)
+
+                # 팝업 배경 회전 (선 방향에 맞춤)
+                popup_rot = pygame.transform.rotate(popup, -angle_deg)
+
+                # 팝업 중심: 아이콘과 목표 지점의 중간
+                mid_x = (icon_cx + target_cx) // 2
+                mid_y = (icon_cy + target_cy) // 2
+                popup_rect = popup_rot.get_rect(center=(mid_x, mid_y))
+
+                # 4) 텍스트 렌더링 (노란 계열 색)
+                text_color = (255, 230, 160)
+                label = info["label"]
+                text_surf = font_label.render(label, True, text_color)
+
+                # 텍스트도 팝업 각도에 맞추되, 거꾸로 보이지 않게 조정
+                text_rot_deg = -angle_deg
+                if text_rot_deg > 90 or text_rot_deg < -90:
+                    # 너무 많이 돌아가면 180도 더 돌려서 바로 세움
+                    text_rot_deg += 180
+
+                text_rot = pygame.transform.rotate(text_surf, text_rot_deg)
+                text_rect = text_rot.get_rect(center=popup_rect.center)
+
+                # 5) 그리기 순서: 팝업 → 텍스트
+                screen.blit(popup_rot, popup_rect)
+                screen.blit(text_rot, text_rect)
 
         pygame.display.flip()
-        clock.tick(60)
 
-    return "EXIT"
+    if cap is not None:
+        cap.release()
+    return None
+
