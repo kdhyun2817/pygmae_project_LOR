@@ -1,10 +1,11 @@
 # battle.py
 import pygame
 import random
+import os
 
 from unit import (
     Unit, SpeedTokenSprite, ResistLevel, DAMAGE_NAME_KO,
-    WHITE, PANEL_BG, DiceKind, DamageType, StatusType
+    WHITE, PANEL_BG, DiceKind, DamageType, StatusType, Unit, SpeedTokenSprite, MouseCursorSprite
 )
 
 from stages import STAGES
@@ -12,6 +13,39 @@ from stages import STAGES
 from pages_structured import load_combat_pages, CombatPage, EffectTarget, EffectTrigger
 
 COMBAT_PAGES = load_combat_pages("combat_pages_structured.csv")
+
+# --- 공격/수비 주사위 아이콘 텍스처 ---
+
+_DICE_ICON_EVADE = None     # 회피
+_DICE_ICON_GUARD = None     # 방어
+_DICE_ICON_SLASH = None     # 참격
+_DICE_ICON_BLUNT = None     # 타격
+_DICE_ICON_PIERCE = None    # 관통
+
+
+def _load_dice_type_icons():
+    """전투 주사위(공격/수비) 아이콘을 한 번만 로드."""
+    global _DICE_ICON_EVADE, _DICE_ICON_GUARD
+    global _DICE_ICON_SLASH, _DICE_ICON_BLUNT, _DICE_ICON_PIERCE
+
+    if _DICE_ICON_EVADE is not None:
+        return  # 이미 로드됨
+
+    base_dir = os.path.dirname(__file__)
+    image_dir = os.path.join(base_dir, "dice")
+
+    def _load(name: str):
+        path = os.path.join(image_dir, name)
+        img = pygame.image.load(path).convert_alpha()
+        return img
+
+    # 파일 이름은 네가 넣어둔 이름 그대로 사용
+    _DICE_ICON_EVADE  = _load("회피 주사위.png")
+    _DICE_ICON_GUARD  = _load("방어 주사위.png")
+    _DICE_ICON_SLASH  = _load("참격 주사위.png")
+    _DICE_ICON_BLUNT  = _load("타격 주사위.png")
+    _DICE_ICON_PIERCE = _load("관통 주사위.png")
+
 
 # 현재 전투에서 사용 중인 속도 토큰 스프라이트 그룹 (run_battle에서 설정)
 CURRENT_SPEED_TOKEN_GROUP = None
@@ -1964,8 +1998,8 @@ def resolve_one_sided_sequence(attacker, defender):
 
         # 🔹 실제 판정 전, 굴리는 연출
         if callable(render_focus) and callable(set_attention_last_fn):
-            TEMP_STEPS = 8
-            TEMP_DELAY = 80
+            TEMP_STEPS = 10
+            TEMP_DELAY = 1
 
             for _ in range(TEMP_STEPS):
                 temp_val = random.randint(d.min_value, d.max_value)
@@ -2234,6 +2268,8 @@ def run_battle(screen, stage_code):
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("malgungothic", 22)
 
+    pygame.mouse.set_visible(False)
+
     w, h = screen.get_size()
     ally_group = create_ally_units(w, h)
     enemy_group = create_enemies_from_stage(stage_code)
@@ -2265,6 +2301,23 @@ def run_battle(screen, stage_code):
     scene_index = 1
     scene_started = False
     speed_rolled = False
+
+    # --- 스프라이트 그룹들 ---
+    all_sprites = pygame.sprite.Group()
+    speed_token_sprites = pygame.sprite.Group()
+
+    # 마우스 커서 스프라이트
+    mouse_cursor = MouseCursorSprite()
+    all_sprites.add(mouse_cursor)
+
+    # 각 유닛의 속도 토큰 스프라이트 생성
+    for u in all_units:
+        n = max(1, int(getattr(u, "speed_dice_count", 1)))
+        for idx in range(n):
+            token_sprite = SpeedTokenSprite(u, idx)
+            speed_token_sprites.add(token_sprite)
+            all_sprites.add(token_sprite)
+
 
     # 🔹 전투 연출(애니메이션) 상태
     anim_state = {
@@ -2371,28 +2424,50 @@ def run_battle(screen, stage_code):
         dice_index = entry.get("dice_index", 0)
 
         # 간단 육각형 그리는 헬퍼
-        def draw_hex(center, radius, fill_color, border_color):
-            import math
-            cx, cy = center
-            points = []
-            # 평평한 윗면을 가진 육각형 (flat-top)
-            for i in range(6):
-                ang = math.radians(60 * i - 30)
-                x = cx + radius * math.cos(ang)
-                y = cy + radius * math.sin(ang)
-                points.append((x, y))
-            pygame.draw.polygon(surface, fill_color, points)
-            pygame.draw.polygon(surface, border_color, points, 2)
+        # 주사위 종류에 따른 아이콘 이미지
+        def get_dice_icon(spec):
+            """
+            combat dice spec을 받아서 알맞은 주사위 아이콘 Surface를 돌려준다.
+            첫 호출 때만 파일에서 로드하고, 이후에는 캐시에 저장해서 재사용.
+            """
+            from unit import DiceKind, DamageType
 
-        # 주사위 종류에 따른 색(이미지 대신)
-        def get_dice_color(spec):
-            from unit import DiceKind
-            if spec.kind == DiceKind.ATTACK:
-                # 공격: 붉은 계열
-                return (210, 80, 80)
+            if not hasattr(get_dice_icon, "cache"):
+                base_dir = os.path.dirname(__file__)
+                image_dir = os.path.join(base_dir, "dice")
+
+                def load(name):
+                    path = os.path.join(image_dir, name)
+                    return pygame.image.load(path).convert_alpha()
+
+                # 파일 이름은 battle_UI 폴더 기준
+                get_dice_icon.cache = {
+                    "EVADE": load("회피 주사위.png"),
+                    "GUARD": load("방어 주사위.png"),
+                    "SLASH": load("참격 주사위.png"),
+                    "BLUNT": load("타격 주사위.png"),
+                    "PIERCE": load("관통 주사위.png"),
+                }
+
+            cache = get_dice_icon.cache
+
+            # kind + damage_type 조합으로 아이콘 선택
+            if spec.kind == DiceKind.EVADE:
+                return cache["EVADE"]
+            elif spec.kind == DiceKind.DEFENSE:
+                return cache["GUARD"]
+            elif spec.kind == DiceKind.ATTACK:
+                dt = getattr(spec, "damage_type", None)
+                if dt == DamageType.SLASH:
+                    return cache["SLASH"]
+                elif dt == DamageType.PIERCE:
+                    return cache["PIERCE"]
+                else:
+                    # 기본은 타격으로
+                    return cache["BLUNT"]
             else:
-                # 방어/회피: 푸른 계열
-                return (80, 130, 220)
+                # 혹시 모르는 경우 기본값
+                return cache["SLASH"]
 
         # 한 유닛 머리 위 UI를 그리는 함수
         def draw_side(unit, page, rolled_value, align_left: bool):
@@ -2425,82 +2500,136 @@ def run_battle(screen, stage_code):
             big_r = 22
 
             # ------------------------------
-            # 2) 방향 기반 box anchor
+            # 2) UI 배경 이미지 (원 + 툴팁 박스)
             # ------------------------------
-            BOX_W = 220
-            BOX_H = 110
+            if not hasattr(draw_side, "ui_bg_loaded"):
+                base_dir = os.path.dirname(__file__)
+                image_dir = os.path.join(base_dir, "battle_UI")
+
+                def _load(name: str):
+                    path = os.path.join(image_dir, name)
+                    return pygame.image.load(path).convert_alpha()
+
+                # 캐릭터 머리 위 큰 원
+                draw_side.circle_base = _load("UIBlackcircle.png")
+                # 이름/남은 주사위용 가로 붓질 배경
+                draw_side.tooltip_base = _load("UIBlacktooltipBG.png")
+                draw_side.ui_bg_loaded = True
+
+            circle_base = draw_side.circle_base
+            tooltip_base = draw_side.tooltip_base
+
+            # big dice용 원 배경 (크기는 big_r 기준으로 스케일)
+            circle_d = big_r * 5
+            circle_bg = pygame.transform.smoothscale(circle_base, (circle_d, circle_d))
+            circle_rect = circle_bg.get_rect(center=(big_cx, big_cy))
+
+
+            # ------------------------------
+            # 툴팁 이미지 스케일링 (라오루 스타일 크기로 강제 조정)
+            # ------------------------------
+            TIP_W = 260  # 가로 크기
+            TIP_H = 90  # 세로 크기
+            tooltip = pygame.transform.smoothscale(tooltip_base, (TIP_W, TIP_H))
+            tooltip_rect = tooltip.get_rect()
+
+            # 원과 박스 사이 간격 (양수로!)
+            offset = big_r - 240  # 필요하면 30~70 사이에서 취향대로 조절
 
             if align_left:
-                # 아군: big dice가 박스 왼쪽 가장자리에 가까움
-                box_left = big_cx - 30  # big dice와 박스 간격 작게
-                box_top = big_cy - BOX_H // 2
+                # 왼쪽에 있는 유닛: 박스를 캐릭터의 왼쪽(바깥쪽)에 배치
+                tooltip_rect.midright = (big_cx - offset, big_cy)
             else:
-                # 적군: big dice가 박스 오른쪽 가장자리에 가까움
-                box_left = big_cx - (BOX_W - 30)  # big dice는 박스 오른쪽으로 붙음
-                box_top = big_cy - BOX_H // 2
+                # 오른쪽에 있는 유닛: 박스를 캐릭터의 오른쪽(바깥쪽)에 배치
+                tooltip_rect.midleft = (big_cx + offset, big_cy)
 
-            box_rect = pygame.Rect(box_left, box_top, BOX_W, BOX_H)
+            surface.blit(tooltip, tooltip_rect)
+            surface.blit(circle_bg, circle_rect)
 
-            # 박스 배경
-            pygame.draw.rect(surface, (20, 20, 40), box_rect)
-            pygame.draw.rect(surface, (220, 220, 240), box_rect, 2)
+            surface.blit(tooltip, tooltip_rect)
+            surface.blit(circle_bg, circle_rect)
 
             # ------------------------------
-            # 3) big dice 그리기
+            # 3) big dice 그리기 (아이콘 + 반투명)
             # ------------------------------
-            color = get_dice_color(cur_spec)
-            draw_hex((big_cx, big_cy), big_r, color, (0, 0, 0))
+            base_icon = get_dice_icon(cur_spec)
 
-            # 값
+            # 기존 육각형 크기에 맞게 스케일
+            big_size = (big_r * 3 + 4, big_r * 3 + 4)
+            big_icon = pygame.transform.smoothscale(base_icon, big_size)
+
+            # 현재 굴리는 주사위는 약간 반투명
+            big_icon = big_icon.copy()
+            big_icon.set_alpha(170)  # 0~255 중, 170 정도면 살짝 비침
+
+            big_rect = big_icon.get_rect(center=(big_cx, big_cy))
+            surface.blit(big_icon, big_rect)
+
+            # 값 (숫자)는 그대로 중앙에 흰색으로 표시
             val_surf = font.render(str(rolled_value), True, (255, 255, 255))
             surface.blit(val_surf, val_surf.get_rect(center=(big_cx, big_cy)))
 
-            # 범위(min~max)
-            small_font = pygame.font.SysFont("malgungothic", 16)
-            rtext = f"{cur_spec.min_value}~{cur_spec.max_value}"
-            rsurf = small_font.render(rtext, True, (255, 255, 255))
-            surface.blit(rsurf, rsurf.get_rect(midbottom=(big_cx, big_cy - big_r - 3)))
+            # 현재 굴리는 주사위의 범위 텍스트를 big dice 위쪽에 표시
+            rt = f"{cur_spec.min_value}~{cur_spec.max_value}"
+            range_surf = small_font.render(rt, True, (255, 255, 255))
+            range_rect = range_surf.get_rect(midbottom=(big_cx, big_cy - big_r + 5))
+            surface.blit(range_surf, range_rect)
 
             # ------------------------------
-            # 4) 책장 이름
-            #   - 아군: 사용 주사위의 오른쪽 위
-            #   - 적군: 사용 주사위의 왼쪽 위
+            # 4) 책장 이름 (툴팁 박스 안쪽에 붙이기)
             # ------------------------------
-            name_surf = font.render(page.name, True, (255, 255, 255))
+            # 글자 크기를 작게 사용
+            name_font = small_font  # 위에서 만든 16pt 폰트 재사용
+
+            # 너무 긴 이름은 말풍선 안에 들어가게 잘라주기
+            name_text = page.name
+
+            name_surf = name_font.render(name_text, True, (255, 255, 255))
             name_rect = name_surf.get_rect()
 
+            name_text = page.name
+            name_surf = name_font.render(name_text, True, WHITE)
+            name_rect = name_surf.get_rect()
+
+            name_w = name_rect.width  # ← 글자 길이 (픽셀 단위)
+
             if align_left:
-                # 아군: 큰 주사위 기준 오른쪽 위
-                name_rect.midleft = (big_cx + big_r + 6, big_cy - big_r - 6)
+                # 아군: 박스 안쪽 왼쪽에서 오른쪽으로 읽히게
+                name_rect.midright = (tooltip_rect.left + 80 + name_w, big_cy - 25)
             else:
-                # 적군: 큰 주사위 기준 왼쪽 위
-                name_rect.midright = (big_cx - big_r - 6, big_cy - big_r - 6)
+                # 적군: 박스 안쪽 오른쪽에서 왼쪽으로 읽히게
+                name_rect.midleft = (tooltip_rect.right - 80 - name_w, big_cy - 25)
 
             surface.blit(name_surf, name_rect)
 
             # ------------------------------
-            # 5) 남은 주사위 배치 (오른쪽 / 왼쪽)
+            # 5) 남은 주사위 배치 (툴팁 박스 아래쪽 라인)
             # ------------------------------
             if align_left:
-                # 아군: 남은 주사위는 오른쪽으로
-                start_x = big_cx + big_r + 20
+                # 아군: 왼쪽에서 오른쪽으로 나열
+                start_x = tooltip_rect.left + 90
                 dir = 1
             else:
-                # 적군: 남은 주사위는 왼쪽으로
-                start_x = big_cx - big_r - 20
+                # 적군: 오른쪽에서 왼쪽으로 나열
+                start_x = tooltip_rect.right - 90
                 dir = -1
 
             for i, spec in enumerate(remaining_specs):
                 cx = start_x + dir * (i * (small_r * 2 + 12))
-                cy = big_cy + 26
+                cy = big_cy + 10
 
-                c = get_dice_color(spec)
-                draw_hex((cx, cy), small_r, c, (0, 0, 0))
+                # 아이콘 선택 후 스케일
+                base_icon = get_dice_icon(spec)
+                small_size = (small_r * 2 + 4, small_r * 2 + 4)
+                small_icon = pygame.transform.smoothscale(base_icon, small_size)
+                small_rect = small_icon.get_rect(center=(cx, cy))
+                surface.blit(small_icon, small_rect)
 
-                # 범위
+                # 각 남은 주사위의 범위 텍스트 (아이콘 위쪽)
                 rt = f"{spec.min_value}~{spec.max_value}"
                 r_s = small_font.render(rt, True, (255, 255, 255))
-                surface.blit(r_s, r_s.get_rect(midbottom=(cx, cy - small_r - 2)))
+                r_rect = r_s.get_rect(midbottom=(cx, cy - small_r + 10))
+                surface.blit(r_s, r_rect)
 
         # ATTENTION_LAST 에서 정보 꺼내기
         unit_a = entry.get("unit_a")
@@ -2510,34 +2639,22 @@ def run_battle(screen, stage_code):
         val_a = entry.get("val_a")
         val_b = entry.get("val_b")
 
-        screen_mid = surface.get_width() // 2
-
-        # 두 유닛이 모두 있을 때는 무조건 좌/우를 갈라서 그린다.
+        # 두 유닛이 모두 있을 때
         if (
                 unit_a is not None and page_a is not None and val_a is not None and
                 unit_b is not None and page_b is not None and val_b is not None
         ):
-            # 실제 x 좌표 기준으로 왼쪽/오른쪽 유닛 결정
-            if unit_a.rect.centerx <= unit_b.rect.centerx:
-                left_unit, left_page, left_val = unit_a, page_a, val_a
-                right_unit, right_page, right_val = unit_b, page_b, val_b
-            else:
-                left_unit, left_page, left_val = unit_b, page_b, val_b
-                right_unit, right_page, right_val = unit_a, page_a, val_a
-
-            # 왼쪽 유닛은 항상 align_left=True, 오른쪽 유닛은 False
-            draw_side(left_unit, left_page, left_val, align_left=True)
-            draw_side(right_unit, right_page, right_val, align_left=False)
+            # 위치랑 상관없이, 아군/적군 기준으로 방향 결정
+            draw_side(unit_a, page_a, val_a, align_left=unit_a.is_ally)
+            draw_side(unit_b, page_b, val_b, align_left=unit_b.is_ally)
 
         else:
-            # 한쪽만 있는 경우에는 기존처럼 화면 중앙 기준으로만 판단
+            # 한쪽만 있는 경우에도 동일하게 아군/적군 기준으로 방향 결정
             if unit_a is not None and page_a is not None and val_a is not None:
-                align_a = (unit_a.rect.centerx < screen_mid)
-                draw_side(unit_a, page_a, val_a, align_left=align_a)
+                draw_side(unit_a, page_a, val_a, align_left=unit_a.is_ally)
 
             if unit_b is not None and page_b is not None and val_b is not None:
-                align_b = (unit_b.rect.centerx < screen_mid)
-                draw_side(unit_b, page_b, val_b, align_left=align_b)
+                draw_side(unit_b, page_b, val_b, align_left=unit_b.is_ally)
 
     def draw_enemy_hover_page_ui(surface, font, hovered_speed_unit, hovered_speed_token_index):
         if hovered_speed_unit is None or hovered_speed_unit.is_ally:
@@ -3056,6 +3173,8 @@ def run_battle(screen, stage_code):
             # 아직 A-3가 안 붙어 있거나 이름이 다를 수도 있어서 그냥 무시
             pass
 
+        all_sprites.draw(screen)
+
         pygame.display.flip()
         # 창이 '응답 없음' 안 뜨게 이벤트 펌프
         pygame.event.pump()
@@ -3340,6 +3459,8 @@ def run_battle(screen, stage_code):
     while running:
         dt = clock.tick(60)
 
+        all_sprites.update()
+
         # --- 막이 아직 시작되지 않았으면 여기서 시작 처리 ---
         # --- 막이 아직 시작되지 않았으면 여기서 시작 처리 ---
         if not scene_started:
@@ -3362,6 +3483,12 @@ def run_battle(screen, stage_code):
             if event.type == pygame.QUIT:
                 running = False
                 result = "quit"
+
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mouse_cursor.set_pressed(True)
+
+            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                mouse_cursor.set_pressed(False)
 
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
@@ -3670,6 +3797,15 @@ def run_battle(screen, stage_code):
         hovered_speed_unit = None
         hovered_speed_token_index = None
 
+        # 마우스 커서와 부딪힌 속도 토큰 전부 가져오기
+        hits = pygame.sprite.spritecollide(mouse_cursor, speed_token_sprites, False)
+
+        if hits:
+            # 겹친 토큰이 여러 개면, 일단 마지막(혹은 첫 번째) 하나만 사용
+            token = hits[-1]
+            hovered_speed_unit = token.owner
+            hovered_speed_token_index = token.token_index
+
         # 1) 본체 스프라이트 기준 hover (오른쪽 패널)
         for u in all_units:
             if u.rect.collidepoint(mouse_pos):
@@ -3702,6 +3838,13 @@ def run_battle(screen, stage_code):
         if hovered_speed_unit is not None and not getattr(hovered_speed_unit, "is_ally", False):
             enemy_highlight_unit = hovered_speed_unit
             enemy_highlight_token_index = hovered_speed_token_index
+
+        # 🔹 각 유닛에 현재 hover 중인 속도 토큰 인덱스를 저장
+        for u in all_units:
+            if u is hovered_speed_unit:
+                u.hovered_token_index = hovered_speed_token_index
+            else:
+                u.hovered_token_index = None
 
         # ===== 그리기 시작 =====
         screen.fill((30, 30, 40))
@@ -3815,7 +3958,11 @@ def run_battle(screen, stage_code):
             ):
                 draw_zoom_focus_pair(screen, anim_state["attacker"], anim_state["defender"], zoom=1.2)
 
+        all_sprites.draw(screen)
+
         # ✅ 마지막에 한 번만 flip
         pygame.display.flip()
+
+    pygame.mouse.set_visible(True)
 
     return result

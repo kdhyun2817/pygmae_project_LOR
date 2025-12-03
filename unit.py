@@ -3,7 +3,9 @@
 import pygame
 import random
 import math
+import os              # ✅ 추가
 from enum import Enum, auto
+
 
 # ----------------------------
 # 색상 / UI 상수
@@ -25,6 +27,77 @@ PANEL_BG = (20, 20, 30)
 LIGHT_FULL_COLOR = (250, 230, 120)   # 빛이 있는 마름모 색
 LIGHT_EMPTY_COLOR = (80, 80, 80)     # 빈 마름모 색
 LIGHT_BORDER_COLOR = (20, 20, 20)    # 테두리
+
+# ----------------------------
+# 속도 주사위 아이콘 텍스처
+# ----------------------------
+
+_DICE_IMG_BASE_ALLY = None
+_DICE_IMG_BASE_ENEMY = None
+_DICE_IMG_TARGET_ALLY = None
+_DICE_IMG_TARGET_ENEMY = None
+_DICE_IMG_HOVER_ALLY = None
+_DICE_IMG_HOVER_ENEMY = None
+_DICE_IMG_BROKEN = None
+
+
+def _load_dice_images():
+    """머리 위 속도 주사위에 쓸 이미지를 한 번만 로드한다."""
+    global _DICE_IMG_BASE_ALLY, _DICE_IMG_BASE_ENEMY
+    global _DICE_IMG_TARGET_ALLY, _DICE_IMG_TARGET_ENEMY
+    global _DICE_IMG_HOVER_ALLY, _DICE_IMG_HOVER_ENEMY
+    global _DICE_IMG_BROKEN
+
+    if _DICE_IMG_BASE_ALLY is not None:
+        return  # 이미 로드됨
+
+    base_dir = os.path.dirname(__file__)
+    image_dir = os.path.join(base_dir, "dice")   # ✅ battle_UI 폴더
+
+    def _load(name: str):
+        path = os.path.join(image_dir, name)
+        img = pygame.image.load(path).convert_alpha()
+        return img
+
+    # 1, 2번: 기본 주사위
+    _DICE_IMG_BASE_ALLY  = _load("AfterIcon_9_9.png")   # 노란 계열(아군)
+    _DICE_IMG_BASE_ENEMY = _load("AfterIcon_9_12.png")  # 핑크 계열(적군)
+
+    # 3, 4번: 공격 대상 선택됨(타겟 확정)
+    _DICE_IMG_TARGET_ALLY  = _load("AfterIcon_9_10.png")  # 아군용
+    _DICE_IMG_TARGET_ENEMY = _load("AfterIcon_9_13.png")  # 적군용
+
+    # 5, 6번: 마우스 오버(hover) 강조
+    _DICE_IMG_HOVER_ALLY  = _load("AfterIcon_9_11.png")  # 아군용
+    _DICE_IMG_HOVER_ENEMY = _load("AfterIcon_9_14.png")  # 적군용
+
+    _DICE_IMG_BROKEN = _load("BreakedSpeedDice.png")
+
+# ----------------------------
+# 마우스 커서 텍스처
+# ----------------------------
+
+_CURSOR_IMG_IDLE = None
+_CURSOR_IMG_CLICK = None
+
+def _load_cursor_images():
+    global _CURSOR_IMG_IDLE, _CURSOR_IMG_CLICK
+
+    if _CURSOR_IMG_IDLE is not None:
+        return
+
+    base_dir = os.path.dirname(__file__)
+    image_dir = os.path.join(base_dir, "mouse")
+
+    def _load(name: str):
+        path = os.path.join(image_dir, name)
+        img = pygame.image.load(path).convert_alpha()
+        return img
+
+    # ⚠️ 여기 파일 이름은 네가 저장한 이름에 맞게 고쳐줘
+    _CURSOR_IMG_IDLE  = _load("mouse_idle.png")   # 기본 마우스
+    _CURSOR_IMG_CLICK = _load("mouse_click.png")  # 좌클릭 중
+
 
 
 # ----------------------------
@@ -115,7 +188,7 @@ class SpeedTokenSprite(pygame.sprite.Sprite):
     - owner: 이 토큰을 소유한 Unit
     - token_index: owner 기준 몇 번째 토큰인지 (0-based)
     - rect.center: 화면 상 토큰 위치
-    - image: 충돌 영역을 표현하는 투명한 정사각형 Surface
+    - battle_UI: 충돌 영역을 표현하는 투명한 정사각형 Surface
              (시각 연출은 아직 Unit.draw_speed_token이 담당)
     """
 
@@ -157,6 +230,35 @@ class SpeedTokenSprite(pygame.sprite.Sprite):
     def update(self):
         """매 프레임 호출되어 위치를 owner에 맞춰 갱신한다."""
         self.update_position()
+
+
+class MouseCursorSprite(pygame.sprite.Sprite):
+    """마우스 커서를 이미지 스프라이트로 표현하는 클래스."""
+
+    def __init__(self):
+        super().__init__()
+
+        _load_cursor_images()
+
+        # 원본 이미지 보관
+        self.image_idle = _CURSOR_IMG_IDLE
+        self.image_click = _CURSOR_IMG_CLICK
+
+        self.image = self.image_idle
+        self.rect = self.image.get_rect()
+
+        # 현재 좌클릭 상태
+        self.is_pressed = False
+
+    def set_pressed(self, pressed: bool):
+        """좌클릭 여부에 따라 이미지 전환."""
+        self.is_pressed = pressed
+        self.image = self.image_click if pressed else self.image_idle
+
+    def update(self):
+        """항상 실제 마우스 위치를 따라가도록."""
+        mx, my = pygame.mouse.get_pos()
+        self.rect.center = (mx, my)
 
 
 # ----------------------------
@@ -209,6 +311,9 @@ class Unit(pygame.sprite.Sprite):
 
         # 🔹 이번 막에 방어에 사용 중인 토큰 인덱스(화살표 끝 위치용)
         self.defense_token_index = None
+
+        # 🔹 마우스가 올라간 속도 토큰 인덱스 (없으면 None)
+        self.hovered_token_index = None
 
         # 전투 그룹 참조 (흐트러짐 시 동료에게 효과를 전달하는 기능 등에서 사용)
         self.ally_group = None
@@ -736,8 +841,6 @@ class Unit(pygame.sprite.Sprite):
             base_state_text = "사망"
         elif self.is_escaped:
             base_state_text = "도주"
-        elif self.is_staggered:
-            base_state_text = "흐트러짐!"
         else:
             base_state_text = None
 
@@ -758,21 +861,48 @@ class Unit(pygame.sprite.Sprite):
             # 사망/도주/흐트러짐이면 모든 토큰에 같은 텍스트
             texts = [base_state_text for _ in centers]
 
-        # 실제 그리기
+        # 🔹 실제 그리기 (이미지 사용)
+        _load_dice_images()  # 한 번만 로드되지만, 여기서 호출해도 됨
+
         for idx, (cx, cy) in enumerate(centers):
-            hex_points = []
-            for k in range(6):
-                ang = math.radians(60 * k - 30)
-                x = cx + radius * math.cos(ang)
-                y = cy + radius * math.sin(ang)
-                hex_points.append((x, y))
+            size = int(radius * 2.2)
 
-            pygame.draw.polygon(surface, TOKEN_COLOR, hex_points)
-            pygame.draw.polygon(surface, TOKEN_BORDER, hex_points, 3)
+            # rect는 항상 가장 먼저 생성해야 함 (통일된 방식)
+            rect = pygame.Rect(0, 0, size, size)
+            rect.center = (cx, cy)
 
+            # 🔥 흐트러짐: 전용 아이콘만 표시하고 나머지는 건너뛴다
+            if self.is_staggered:
+                broken_img = pygame.transform.smoothscale(_DICE_IMG_BROKEN, (size, size))
+                surface.blit(broken_img, rect)
+                continue
+
+            # 🔹 아군/적군 기본 주사위 이미지 로드
+            if self.is_ally:
+                base_img = pygame.transform.smoothscale(_DICE_IMG_BASE_ALLY, (size, size))
+                target_img = pygame.transform.smoothscale(_DICE_IMG_TARGET_ALLY, (size, size))
+                hover_img = pygame.transform.smoothscale(_DICE_IMG_HOVER_ALLY, (size, size))
+            else:
+                base_img = pygame.transform.smoothscale(_DICE_IMG_BASE_ENEMY, (size, size))
+                target_img = pygame.transform.smoothscale(_DICE_IMG_TARGET_ENEMY, (size, size))
+                hover_img = pygame.transform.smoothscale(_DICE_IMG_HOVER_ENEMY, (size, size))
+
+            # 1) 기본 아이콘
+            surface.blit(base_img, rect)
+
+            # 2) 타겟 확정 덧씌우기
+            if idx in self.token_plans:
+                surface.blit(target_img, rect)
+
+            # 3) 마우스 hover 덧씌우기
+            if self.hovered_token_index == idx:
+                surface.blit(hover_img, rect)
+
+            # 4) 숫자/범위 텍스트 표시
             token_text = texts[idx]
-            surf = font.render(token_text, True, (0, 0, 0))
-            surface.blit(surf, surf.get_rect(center=(cx, cy)))
+            text_img = font.render(token_text, True, WHITE)
+            text_rect = text_img.get_rect(center=(cx, cy))
+            surface.blit(text_img, text_rect)
 
     def draw_hp_sp_bar(self, surface):
         bar_width = 80
