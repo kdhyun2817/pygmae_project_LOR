@@ -3,19 +3,18 @@ import pygame
 import random
 
 from unit import (
-    Unit, ResistLevel, DAMAGE_NAME_KO,
+    Unit, SpeedTokenSprite, ResistLevel, DAMAGE_NAME_KO,
     WHITE, PANEL_BG, DiceKind, DamageType, StatusType
 )
+
 from stages import STAGES
 
 from pages_structured import load_combat_pages, CombatPage, EffectTarget, EffectTrigger
 
 COMBAT_PAGES = load_combat_pages("combat_pages_structured.csv")
 
-# # --- 주목(Attention) 주사위 연출용 전역 애니메이션 함수 포인터 ---
-# PLAY_CLASH_FOCUS_ANIM = None        # 합공 1회 주사위 연출용
-# PLAY_ONESIDED_FOCUS_ANIM = None     # 일방공 1회 주사위 연출용
-
+# 현재 전투에서 사용 중인 속도 토큰 스프라이트 그룹 (run_battle에서 설정)
+CURRENT_SPEED_TOKEN_GROUP = None
 
 # --- 주목(Attention) 시스템용 마지막 주사위 로그 ---
 ATTENTION_LAST = None  # {"kind": ..., "unit_a": ..., ...}
@@ -366,7 +365,6 @@ def build_dice_summary_lines(page: CombatPage):
         lines.append(f"{kind_name} {val}")
 
     return lines
-
 
 # ----------------------------
 # 감정고조
@@ -934,15 +932,65 @@ def get_unit_at_token(all_units, pos):
                 return u
     return None
 
+def rebuild_speed_token_sprites(all_units, token_group):
+    """현재 all_units의 speed_dice_count 값을 기준으로
+    속도 토큰 스프라이트들을 다시 생성한다.
+    - token_group은 pygame.sprite.Group 인스턴스
+    - 각 유닛의 토큰 인덱스(0 ~ speed_dice_count-1)에 대해 SpeedTokenSprite를 만든다.
+    """
+    token_group.empty()
+    for u in all_units:
+        # Unit 쪽에서 speed_dice_count가 정의되어 있지 않으면 기본 1개로 취급
+        n = max(1, int(getattr(u, "speed_dice_count", 1)))
+        for idx in range(n):
+            token_sprite = SpeedTokenSprite(u, idx)
+            token_group.add(token_sprite)
+
+
 def get_token_at_pos(all_units, pos):
     """
     마우스 좌표 pos가 어느 유닛의 '몇 번 속도 토큰' 위에 있는지 찾아서
     (unit, token_index)를 돌려준다.
+    - all_units: 검색 범위로 삼을 유닛 그룹(ally_group, enemy_group, all_units 등)
+    - pos      : (x, y) 마우스 좌표
     없으면 (None, None).
     """
     mx, my = pos
-    radius = 28
 
+    global CURRENT_SPEED_TOKEN_GROUP
+    group = CURRENT_SPEED_TOKEN_GROUP
+
+    # 1) 현재 전투에서 토큰 스프라이트 그룹이 설정되어 있다면,
+    #    그 안에서 owner가 all_units에 포함되는 스프라이트만 대상으로 충돌 판정한다.
+    if group is not None:
+        clicked_sprite = None
+        best_dist2 = None
+
+        for spr in group:
+            owner = getattr(spr, "owner", None)
+            if owner not in all_units:
+                continue
+
+            # rect 기준으로 충돌 영역 확인
+            if not spr.rect.collidepoint(mx, my):
+                continue
+
+            cx, cy = spr.rect.center
+            dx = mx - cx
+            dy = my - cy
+            d2 = dx * dx + dy * dy
+
+            if clicked_sprite is None or d2 < best_dist2:
+                clicked_sprite = spr
+                best_dist2 = d2
+
+        if clicked_sprite is not None:
+            return clicked_sprite.owner, clicked_sprite.token_index
+
+    # 2) 혹시라도 group이 아직 설정되지 않았거나,
+    #    어떤 이유로 스프라이트에서 못 찾은 경우에는
+    #    이전 버전과 동일한 원형 거리 기반 판정으로 폴백한다.
+    radius = 28
     for u in all_units:
         if hasattr(u, "get_speed_token_centers"):
             centers = u.get_speed_token_centers()
@@ -960,24 +1008,28 @@ def get_token_at_pos(all_units, pos):
 
 
 
+
 def get_hand_owner(selected_unit, selected_token_index,
                    hovered_speed_unit, hovered_speed_token_index):
     """
     중앙 아래에 어떤 '유닛/토큰'의 카드를 보여줄지 결정.
     우선순위:
       1) 선택된 유닛 + 선택된 토큰
-      2) 아니면, 마우스가 올라간 속도 토큰
+      2) (행동 가능하면) 마우스가 올라간 속도 토큰
       3) 그 외에는 (None, None)
     """
     # 1) 명시적으로 선택된 토큰이 있으면 그걸 최우선
     if selected_unit is not None and selected_token_index is not None:
-        return selected_unit, selected_token_index
+        if can_unit_roll_dice(selected_unit):
+            return selected_unit, selected_token_index
 
-    # 2) 선택된 게 없으면 hover 중인 토큰
+    # 2) 선택된 게 없으면 hover 중인 토큰 (행동 가능할 때만)
     if hovered_speed_unit is not None and hovered_speed_token_index is not None:
-        return hovered_speed_unit, hovered_speed_token_index
+        if can_unit_roll_dice(hovered_speed_unit):
+            return hovered_speed_unit, hovered_speed_token_index
 
     return None, None
+
 
 
 
@@ -1758,9 +1810,8 @@ def resolve_clash_between_units(unit_a, unit_b):
         if (not is_unit_alive_and_present(unit_a)) and (not is_unit_alive_and_present(unit_b)):
             break
 
-        # 각 유닛이 지금 주사위를 굴릴 수 있는지
-        can_a = d_a is not None and can_unit_roll_dice(unit_a)
-        can_b = d_b is not None and can_unit_roll_dice(unit_b)
+        can_a = (d_a is not None) and is_unit_alive_and_present(unit_a)
+        can_b = (d_b is not None) and is_unit_alive_and_present(unit_b)
 
         # 🔹 주사위 1개 시작: 기존 데미지 팝업 정리
         if callable(clear_popups):
@@ -2116,6 +2167,8 @@ def build_scene_actions(all_units, ally_group, enemy_group):
     return actions
 
 
+
+
 def apply_action_token_plan(kind, attacker, defender, atk_token_idx, def_token_idx):
     """
     actions 항목에서 넘어온 토큰 인덱스를 기준으로
@@ -2203,6 +2256,11 @@ def run_battle(screen, stage_code):
 
     #  전투 시작 시 각 유닛에게 책장 9장 배정 + 손패 3장
     init_decks_for_units(ally_group, enemy_group)
+
+    # 속도 토큰 스프라이트 그룹 생성 (이번 전투 동안 재사용)
+    token_group = pygame.sprite.Group()
+    global CURRENT_SPEED_TOKEN_GROUP
+    CURRENT_SPEED_TOKEN_GROUP = token_group
 
     scene_index = 1
     scene_started = False
@@ -2452,17 +2510,34 @@ def run_battle(screen, stage_code):
         val_a = entry.get("val_a")
         val_b = entry.get("val_b")
 
-        # 화면 가운데 x 좌표
         screen_mid = surface.get_width() // 2
 
-        # 캐릭터의 실제 위치를 기준으로 UI 방향 결정
-        if unit_a is not None and page_a is not None and val_a is not None:
-            align_a = (unit_a.rect.centerx < screen_mid)  # 왼쪽에 있으면 왼쪽 캐릭터 스타일
-            draw_side(unit_a, page_a, val_a, align_left=align_a)
+        # 두 유닛이 모두 있을 때는 무조건 좌/우를 갈라서 그린다.
+        if (
+                unit_a is not None and page_a is not None and val_a is not None and
+                unit_b is not None and page_b is not None and val_b is not None
+        ):
+            # 실제 x 좌표 기준으로 왼쪽/오른쪽 유닛 결정
+            if unit_a.rect.centerx <= unit_b.rect.centerx:
+                left_unit, left_page, left_val = unit_a, page_a, val_a
+                right_unit, right_page, right_val = unit_b, page_b, val_b
+            else:
+                left_unit, left_page, left_val = unit_b, page_b, val_b
+                right_unit, right_page, right_val = unit_a, page_a, val_a
 
-        if unit_b is not None and page_b is not None and val_b is not None:
-            align_b = (unit_b.rect.centerx < screen_mid)
-            draw_side(unit_b, page_b, val_b, align_left=align_b)
+            # 왼쪽 유닛은 항상 align_left=True, 오른쪽 유닛은 False
+            draw_side(left_unit, left_page, left_val, align_left=True)
+            draw_side(right_unit, right_page, right_val, align_left=False)
+
+        else:
+            # 한쪽만 있는 경우에는 기존처럼 화면 중앙 기준으로만 판단
+            if unit_a is not None and page_a is not None and val_a is not None:
+                align_a = (unit_a.rect.centerx < screen_mid)
+                draw_side(unit_a, page_a, val_a, align_left=align_a)
+
+            if unit_b is not None and page_b is not None and val_b is not None:
+                align_b = (unit_b.rect.centerx < screen_mid)
+                draw_side(unit_b, page_b, val_b, align_left=align_b)
 
     def draw_enemy_hover_page_ui(surface, font, hovered_speed_unit, hovered_speed_token_index):
         if hovered_speed_unit is None or hovered_speed_unit.is_ally:
@@ -2479,6 +2554,92 @@ def run_battle(screen, stage_code):
         page = plan.get("page")
         if page is None:
             return
+
+    def adjust_actions_after_stagger(actions, cur_index):
+        """
+        이번 막 도중에 흐트러짐이 된 아군이 있으면,
+        남은 actions를 규칙에 맞게 재조정한다.
+
+        - 흐트러진 아군이 '공격자'인 일방공격(one_sided)은 삭제
+        - 흐트러진 아군이 포함된 합공(clash)은
+            → 비흐트러진 쪽의 일방공격(one_sided)으로 변환
+        """
+        # 현재 살아 있고 전장에 남아 있는 '흐트러진 아군'들
+        staggered_allies = {
+            u for u in ally_group
+            if getattr(u, "is_staggered", False) and is_unit_alive_and_present(u)
+        }
+
+        if not staggered_allies:
+            return actions, cur_index
+
+        new_actions = []
+        for idx, act in enumerate(actions):
+            kind2, spd2, ua, ub, atk2, def2 = act
+
+            # 이미 처리했거나 지금 처리 중인 action은 그대로 둔다.
+            if idx <= cur_index:
+                new_actions.append(act)
+                continue
+
+            a_is_stag = ua in staggered_allies
+            b_is_stag = ub in staggered_allies
+
+            if not a_is_stag and not b_is_stag:
+                # 흐트러진 아군이 관여하지 않는 action 은 그대로
+                new_actions.append(act)
+                continue
+
+            # --- 여기부터는 흐트러진 아군이 관여하는 action ---
+
+            if kind2 == "one_sided":
+                # 공격자가 흐트러진 아군이면: 이 일방공은 취소 (아무것도 안 일어남)
+                if a_is_stag:
+                    continue
+                # 방어자만 흐트러진 경우: 그대로 남겨서 맞게 둔다.
+                new_actions.append(act)
+                continue
+
+            if kind2 == "clash":
+                # 둘 다 흐트러졌으면 그냥 취소
+                if a_is_stag and b_is_stag:
+                    continue
+
+                # 한쪽만 흐트러졌으면 나머지 쪽이 일방공격을 한다.
+                if a_is_stag and not b_is_stag:
+                    attacker2 = ub  # 비흐트러진 쪽
+                    defender2 = ua
+                    atk_token = def2  # 원래 수비 토큰을 공격 토큰으로 사용
+                elif b_is_stag and not a_is_stag:
+                    attacker2 = ua
+                    defender2 = ub
+                    atk_token = atk2
+                else:
+                    new_actions.append(act)
+                    continue
+
+                new_actions.append((
+                    "one_sided",
+                    spd2,
+                    attacker2,
+                    defender2,
+                    atk_token,
+                    None,  # 방어 토큰 인덱스는 사용하지 않음
+                ))
+                continue
+
+            # 혹시 모르는 다른 kind는 그대로
+            new_actions.append(act)
+
+        # 남은 action이 하나도 없을 수도 있음
+        if not new_actions:
+            return [], 0
+
+        # 현재 인덱스가 리스트 범위를 벗어나지 않도록 보정
+        if cur_index >= len(new_actions):
+            cur_index = len(new_actions) - 1
+
+        return new_actions, cur_index
 
     # --- 전투 연출 업데이트 함수 ---
     def start_battle_animation(actions):
@@ -2738,6 +2899,17 @@ def run_battle(screen, stage_code):
                         resolve_one_sided_sequence(a, b)
 
                     anim_state["resolved"] = True
+
+                    # 🔹 전투 처리 후, 합 도중 흐트러짐이 발생했으면 남은 action 수정
+                    anim_state["actions"], anim_state["index"] = adjust_actions_after_stagger(
+                        anim_state["actions"],
+                        anim_state["index"],
+                    )
+                    # 남은 action이 없으면 바로 귀환 연출로 넘어가도록 처리
+                    if not anim_state["actions"]:
+                        anim_state["phase"] = "return"
+                        anim_state["return_timer"] = 0.0
+                        return
 
                 if anim_state["timer"] >= DICE_TIME:
                     anim_state["phase"] = "hold"
@@ -3169,12 +3341,16 @@ def run_battle(screen, stage_code):
         dt = clock.tick(60)
 
         # --- 막이 아직 시작되지 않았으면 여기서 시작 처리 ---
+        # --- 막이 아직 시작되지 않았으면 여기서 시작 처리 ---
         if not scene_started:
             start_scene(scene_index, all_units)
 
             # ✅ 이번 막 시작 시, 이전 막의 공격 계획 초기화 & 속도 미정 상태로
             reset_plans(all_units)
             speed_rolled = False
+
+            # 새 막 기준으로 속도 토큰 스프라이트 다시 구성
+            rebuild_speed_token_sprites(all_units, token_group)
 
             scene_started = True
 
@@ -3448,6 +3624,10 @@ def run_battle(screen, stage_code):
                     clicked_unit, clicked_token_idx = get_token_at_pos(all_units, mouse_pos)
 
                     if clicked_unit is not None:
+                        # 흐트러짐/행동 불가 유닛은 선택 불가
+                        if not can_unit_roll_dice(clicked_unit):
+                            continue
+
                         # 적은 좌클릭으로 선택 불가 (아군만 선택 가능)
                         if not clicked_unit.is_ally:
                             continue
@@ -3480,7 +3660,12 @@ def run_battle(screen, stage_code):
 
         all_units.update()
 
+        # 속도 토큰 스프라이트도 유닛 위치/속도 변화에 맞춰 갱신
+        if 'token_group' in locals():
+            token_group.update()
+
         mouse_pos = pygame.mouse.get_pos()
+
         hovered_unit = None
         hovered_speed_unit = None
         hovered_speed_token_index = None
@@ -3493,6 +3678,10 @@ def run_battle(screen, stage_code):
 
         # 2) 속도 코인 기준 hover (카드/미리보기용)
         for u in all_units:
+            # 흐트러짐/행동 불가면 토큰 hover / 손패 미리보기 대상에서 제외
+            if not can_unit_roll_dice(u):
+                continue
+
             if hasattr(u, "get_speed_token_centers"):
                 centers = u.get_speed_token_centers()
             else:

@@ -108,6 +108,58 @@ class StatusEffect:
         self.duration = duration
 
 # ----------------------------
+# 속도 토큰 스프라이트
+# ----------------------------
+class SpeedTokenSprite(pygame.sprite.Sprite):
+    """각 유닛의 속도 토큰(코인)을 위한 스프라이트.
+    - owner: 이 토큰을 소유한 Unit
+    - token_index: owner 기준 몇 번째 토큰인지 (0-based)
+    - rect.center: 화면 상 토큰 위치
+    - image: 충돌 영역을 표현하는 투명한 정사각형 Surface
+             (시각 연출은 아직 Unit.draw_speed_token이 담당)
+    """
+
+    def __init__(self, owner, token_index: int, radius: int = 28):
+        super().__init__()
+        self.owner = owner
+        self.token_index = int(token_index)
+        self.radius = radius
+
+        # 충돌/선택용 히트박스. 화면에는 직접 안 그릴 거라 완전 투명한 Surface로 만든다.
+        diameter = self.radius * 2
+        self.image = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
+        self.image.fill((0, 0, 0, 0))
+        self.rect = self.image.get_rect()
+
+        # 초기 위치 동기화
+        self.update_position()
+
+    def update_position(self):
+        """owner의 get_speed_token_centers()를 기준으로 자신의 위치를 갱신한다."""
+        if self.owner is None:
+            return
+
+        # Unit 쪽 헬퍼를 사용해 항상 동일한 규칙으로 좌표를 계산한다.
+        if hasattr(self.owner, "get_speed_token_centers"):
+            centers = self.owner.get_speed_token_centers()
+        else:
+            centers = [(self.owner.rect.centerx, self.owner.rect.top - 40)]
+
+        if 0 <= self.token_index < len(centers):
+            cx, cy = centers[self.token_index]
+        elif centers:
+            cx, cy = centers[0]
+        else:
+            cx, cy = self.owner.rect.centerx, self.owner.rect.top - 40
+
+        self.rect.center = (cx, cy)
+
+    def update(self):
+        """매 프레임 호출되어 위치를 owner에 맞춰 갱신한다."""
+        self.update_position()
+
+
+# ----------------------------
 # Unit 클래스
 # ----------------------------
 class Unit(pygame.sprite.Sprite):
