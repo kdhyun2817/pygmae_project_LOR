@@ -17,7 +17,7 @@ TOKEN_COLOR = (250, 230, 150)
 TOKEN_BORDER = (200, 180, 100)
 
 HP_BAR_COLOR = (200, 80, 80)
-SP_BAR_COLOR = (80, 80, 200)
+SP_BAR_COLOR = (240, 220, 80)
 BAR_BG_COLOR = (60, 60, 60)
 
 BLACK = (0, 0, 0)
@@ -39,6 +39,24 @@ _DICE_IMG_TARGET_ENEMY = None
 _DICE_IMG_HOVER_ALLY = None
 _DICE_IMG_HOVER_ENEMY = None
 _DICE_IMG_BROKEN = None
+
+_HP_SP_FRAME = None
+
+def _load_hp_sp_frame():
+    """캐릭터 아래 HP/SP 프레임 이미지를 한 번만 로드."""
+    global _HP_SP_FRAME
+    if _HP_SP_FRAME is not None:
+        return
+
+    base_dir = os.path.dirname(__file__)
+    image_dir = os.path.join(base_dir, "battle_UI")   # ← battle_UI 폴더
+    path = os.path.join(image_dir, "체력바오버레이프레임.png")  # 실제 파일명 맞춰줘
+
+    try:
+        _HP_SP_FRAME = pygame.image.load(path).convert_alpha()
+    except Exception as e:
+        print("[경고] HP/SP 프레임 이미지 로드 실패:", e)
+        _HP_SP_FRAME = None
 
 
 def _load_dice_images():
@@ -72,6 +90,96 @@ def _load_dice_images():
     _DICE_IMG_HOVER_ENEMY = _load("AfterIcon_9_14.png")  # 적군용
 
     _DICE_IMG_BROKEN = _load("BreakedSpeedDice.png")
+
+def _draw_ring_gauge(surface, center, outer_r, inner_r, ratio, color,
+                     start_angle=-math.pi / 2):
+    """
+    도넛(링) 모양 게이지를 중심에서 일정 각도까지 채워서 그린다.
+    - center     : (cx, cy)
+    - outer_r    : 바깥 반지름
+    - inner_r    : 안쪽 반지름
+    - ratio      : 0.0 ~ 1.0 (채워진 비율)
+    - color      : (R, G, B)
+    - start_angle: 시작 각도 (라디안, 기본은 12시 방향)
+    """
+    ratio = max(0.0, min(1.0, float(ratio)))
+    if ratio <= 0.0:
+        return
+
+    total_angle = 2 * math.pi * ratio
+    end_angle = start_angle + total_angle
+
+    # 비율에 따라 세분화 정도 결정
+    steps = max(12, int(80 * ratio))
+    angles = [
+        start_angle + (end_angle - start_angle) * i / steps
+        for i in range(steps + 1)
+    ]
+
+    # 바깥쪽 호
+    outer_pts = [
+        (
+            center[0] + outer_r * math.cos(a),
+            center[1] + outer_r * math.sin(a),
+        )
+        for a in angles
+    ]
+
+    # 안쪽 호 (역방향)
+    inner_pts = [
+        (
+            center[0] + inner_r * math.cos(a),
+            center[1] + inner_r * math.sin(a),
+        )
+        for a in reversed(angles)
+    ]
+
+    pts = outer_pts + inner_pts
+    pygame.draw.polygon(surface, color, pts)
+
+def _draw_ellipse_segment(surface, center, outer_rx, outer_ry,
+                          inner_rx, inner_ry,
+                          angle_start, angle_end, color):
+    """타원 링의 특정 각도 구간만 채워서 그려주는 헬퍼.
+
+    - center: (cx, cy)
+    - outer_rx, outer_ry: 바깥 타원의 x/y 반지름
+    - inner_rx, inner_ry: 안쪽 타원의 x/y 반지름
+    - angle_start, angle_end: 라디안 단위 각도 (angle_start -> angle_end 방향으로 진행)
+    """
+    # 각도 범위 정규화
+    if angle_end < angle_start:
+        angle_start, angle_end = angle_end, angle_start
+
+    span = angle_end - angle_start
+    if span <= 0:
+        return
+
+    # 부드럽게 보이도록 세그먼트 수 결정
+    steps = max(12, int(60 * span / (2 * math.pi)))
+    angles = [
+        angle_start + span * i / steps
+        for i in range(steps + 1)
+    ]
+
+    cx, cy = center
+
+    outer_pts = [
+        (cx + outer_rx * math.cos(a),
+         cy + outer_ry * math.sin(a))
+        for a in angles
+    ]
+
+    inner_pts = [
+        (cx + inner_rx * math.cos(a),
+         cy + inner_ry * math.sin(a))
+        for a in reversed(angles)
+    ]
+
+    pts = outer_pts + inner_pts
+    pygame.draw.polygon(surface, color, pts)
+
+
 
 # ----------------------------
 # 마우스 커서 텍스처
@@ -905,22 +1013,99 @@ class Unit(pygame.sprite.Sprite):
             surface.blit(text_img, text_rect)
 
     def draw_hp_sp_bar(self, surface):
-        bar_width = 80
-        bar_height = 6
+        """체력바 프레임의 중심을 타원 중심으로 보고,
+        아래쪽 반원 구간만 각도로 채우는 HP/SP 타원 게이지.
+        왼쪽 아치는 HP(빨강), 오른쪽 아치는 SP(파랑)."""
 
-        x = self.rect.centerx - bar_width // 2
-        y_hp = self.rect.bottom + 4
-        y_sp = self.rect.bottom + 14
+        # 비율 계산
+        hp_ratio = 0.0 if self.max_hp <= 0 else max(0.0, min(1.0, self.hp / self.max_hp))
+        sp_ratio = 0.0 if self.max_sp <= 0 else max(0.0, min(1.0, self.sp / self.max_sp))
 
-        # HP
-        ratio_hp = max(self.hp, 0) / self.max_hp
-        pygame.draw.rect(surface, BAR_BG_COLOR, (x, y_hp, bar_width, bar_height))
-        pygame.draw.rect(surface, HP_BAR_COLOR, (x, y_hp, int(bar_width * ratio_hp), bar_height))
+        _load_hp_sp_frame()
 
-        # SP
-        ratio_sp = max(self.sp, 0) / self.max_sp
-        pygame.draw.rect(surface, BAR_BG_COLOR, (x, y_sp, bar_width, bar_height))
-        pygame.draw.rect(surface, SP_BAR_COLOR, (x, y_sp, int(bar_width * ratio_sp), bar_height))
+        # --- 프레임 로드 실패 시: 옛날 네모바 fallback ---
+        if _HP_SP_FRAME is None:
+            bar_width = int(self.rect.width * 0.9)
+            bar_height = 6
+            x = self.rect.centerx - bar_width // 2
+            y_hp = self.rect.bottom + 4
+            y_sp = self.rect.bottom + 14
+
+            pygame.draw.rect(surface, BAR_BG_COLOR, (x, y_hp, bar_width, bar_height))
+            pygame.draw.rect(surface, HP_BAR_COLOR,
+                             (x, y_hp, int(bar_width * hp_ratio), bar_height))
+
+            pygame.draw.rect(surface, BAR_BG_COLOR, (x, y_sp, bar_width, bar_height))
+            sp_w = int(bar_width * sp_ratio)
+            pygame.draw.rect(surface, SP_BAR_COLOR,
+                             (x + bar_width - sp_w, y_sp, sp_w, bar_height))
+            return
+
+        # ---------- 프레임 위치 & 스케일 ----------
+        frame_orig = _HP_SP_FRAME
+        base_w, base_h = frame_orig.get_size()
+
+        # ★ 이전보다 절반 정도 크기: self.rect.width * 1.0 으로 축소
+        target_w = int(self.rect.width * 1.0)
+        scale = target_w / base_w
+        target_h = int(base_h * scale)
+
+        frame_img = pygame.transform.smoothscale(frame_orig, (target_w, target_h))
+        frame_rect = frame_img.get_rect()
+        frame_rect.midtop = (self.rect.centerx, self.rect.bottom + 2)
+
+        # 타원 게이지용 서피스 (프레임과 동일 크기, 알파)
+        gauge_surf = pygame.Surface((target_w, target_h), pygame.SRCALPHA)
+
+        # --- 타원 파라미터 ---
+        # 체력바 이미지의 중심 = 타원의 중심
+        cx = target_w * 0.5 + 1
+        cy = target_h * 0.5 - 20
+
+        # 전체 타원의 반지름 (프레임 형태에 맞춰 대략 조정)
+        outer_rx = target_w * 0.55
+        outer_ry = target_h * 1.05
+        thickness = target_h * 0.17
+        inner_rx = outer_rx - thickness
+        inner_ry = outer_ry - thickness
+
+        center = (cx, cy)
+
+        # 아래쪽 반원에 해당하는 각도 범위 (왼쪽 끝 ~ 오른쪽 끝)
+        # 대략 210도 ~ 330도 정도가 지금 프레임 곡선과 비슷함
+        left_angle = math.radians(180)
+        right_angle = math.radians(0)
+        mid_angle = (left_angle + right_angle) * 0.5
+
+        # ----- HP: 왼쪽 반쪽 (left_angle -> mid_angle) -----
+        if hp_ratio > 0.0:
+            # HP 100%일 때: left_angle → mid_angle 전부 채움
+            hp_end = left_angle + (mid_angle - left_angle) * hp_ratio
+            _draw_ellipse_segment(
+                gauge_surf,
+                center,
+                outer_rx, outer_ry,
+                inner_rx, inner_ry,
+                left_angle, hp_end,
+                HP_BAR_COLOR,
+            )
+
+        # ----- SP: 오른쪽 반쪽 (mid_angle -> right_angle) -----
+        if sp_ratio > 0.0:
+            # SP 100%일 때: mid_angle → right_angle 전부 채움
+            sp_end = mid_angle + (right_angle - mid_angle) * sp_ratio
+            _draw_ellipse_segment(
+                gauge_surf,
+                center,
+                outer_rx, outer_ry,
+                inner_rx, inner_ry,
+                mid_angle, sp_end,
+                SP_BAR_COLOR,
+            )
+
+        # 먼저 게이지(색)를 그리고, 그 위에 프레임(검은 라인)을 올린다.
+        surface.blit(gauge_surf, frame_rect)
+        surface.blit(frame_img, frame_rect)
 
     def draw_light(self, surface):
         """머리 위에 빛(마름모)를 그린다."""
