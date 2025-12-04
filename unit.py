@@ -3,7 +3,7 @@
 import pygame
 import random
 import math
-import os              # ✅ 추가
+import os
 from enum import Enum, auto
 
 
@@ -90,6 +90,66 @@ def _load_dice_images():
     _DICE_IMG_HOVER_ENEMY = _load("AfterIcon_9_14.png")  # 적군용
 
     _DICE_IMG_BROKEN = _load("BreakedSpeedDice.png")
+
+
+
+# ----------------------------
+# 캐릭터 스프라이트 로딩
+# ----------------------------
+_CHAR_IMAGE_CACHE = {}
+
+def load_character_images(char_name: str):
+    """
+    characters/<char_name>/ 폴더에서 각 상태별 이미지를 로드해서 dict로 돌려준다.
+    키 예시: "idle", "move", "slash", "pierce", "blunt", "guard", "evade", "hit"
+    """
+    if not char_name:
+        return {}
+
+    if char_name in _CHAR_IMAGE_CACHE:
+        return _CHAR_IMAGE_CACHE[char_name]
+
+    base_dir = os.path.dirname(__file__)
+    char_dir = os.path.join(base_dir, "characters", char_name)
+
+    # ▶ 네가 정한 파일 이름 규칙에 맞춰 매핑
+    filename_map = {
+        "idle":  f"{char_name}_기본.png",
+        "move":  f"{char_name}_이동.png",
+        "pierce": f"{char_name}_관통.png",
+        "slash":  f"{char_name}_참격.png",
+        "blunt":  f"{char_name}_타격.png",
+        "guard":  f"{char_name}_수비.png",    # 필요하면 _방어도 추가
+        "evade":  f"{char_name}_회피.png",
+        "hit":    f"{char_name}_피격.png",
+    }
+
+    images = {}
+    # 세로 기준 목표 높이 (원하는 만큼 조절 가능)
+    TARGET_H = 200  # 예: 130px 정도. 더 키우고 싶으면 150, 180 등으로 바꾸면 됨.
+
+    for key, fname in filename_map.items():
+        path = os.path.join(char_dir, fname)
+        if not os.path.exists(path):
+            continue
+
+        img = pygame.image.load(path).convert_alpha()
+        orig_w, orig_h = img.get_size()
+
+        if orig_h <= 0:
+            continue
+
+        # 🔹 세로 기준으로 비율 유지 스케일
+        scale = TARGET_H / float(orig_h)
+        target_w = int(orig_w * scale)
+        target_h = int(orig_h * scale)
+
+        img = pygame.transform.smoothscale(img, (target_w, target_h))
+        images[key] = img
+
+    _CHAR_IMAGE_CACHE[char_name] = images
+    return images
+
 
 def _draw_ring_gauge(surface, center, outer_r, inner_r, ratio, color,
                      start_angle=-math.pi / 2):
@@ -383,11 +443,9 @@ class Unit(pygame.sprite.Sprite):
         max_sp=20.0,
         hp_resist=None,
         sp_resist=None,
-
-
-
-
+        character_name=None,
     ):
+
         super().__init__()
 
         # --- 기본 스탯 ---
@@ -484,18 +542,108 @@ class Unit(pygame.sprite.Sprite):
         self.speed_max = speed_max
         self.current_speed = None
 
+        # --- 이미지 / 상태 / 방향 ---
+        self.character_name = character_name
+        self.images = {}  # ★ 무조건 dict 로 시작
+        self.current_image_name = "idle"
+        self.animation_state = {
+            "facing": "right",  # 나중에 왼/오 바라보는 방향 제어용
+            "state": "idle",  # idle / move / slash / hit / pierce / guard / dodge 등
+        }
+
+        # 실제로 사용할 상태/방향 기본값
+        self.current_state = "idle"
+        self.facing = 1   # 1: 오른쪽, -1: 왼쪽
 
 
+        # 캐릭터 이름 기준 이미지 로딩
+        if self.character_name:
+            loaded = load_character_images(self.character_name)
+            if loaded is None:
+                loaded = {}
+            self.images = loaded
 
-        # --- 이미지 ---
-        if image_path:
-            self.image = pygame.image.load(image_path).convert_alpha()
-            self.image = pygame.transform.scale(self.image, (80, 80))
+        base = None
+        if self.images:
+            base = self.images.get("idle") or next(iter(self.images.values()), None)
+
+        # image_path 를 통한 단일 이미지 로딩이 있다면 그쪽도 fallback 으로 사용
+        if base is None and image_path:
+            try:
+                img = pygame.image.load(image_path).convert_alpha()
+                base = img
+                self.images["idle"] = img
+            except Exception:
+                base = None
+
+        self.base_image = base
+
+        # --- 스프라이트 필수 요소 설정 ---
+        self.image = self.base_image
+        if self.image is not None:
+            self.rect = self.image.get_rect()
+            self.rect.center = (x, y)
         else:
-            self.image = pygame.Surface((80, 80), pygame.SRCALPHA)
-            self.image.fill(ALLY_COLOR if is_ally else ENEMY_COLOR)
+            # 이미지 로딩 실패 시 기본 rect라도 만들어야 충돌 안 생김
+            self.rect = pygame.Rect(x, y, 80, 120)
 
-        self.rect = self.image.get_rect(center=(x, y))
+    # =============================
+    # 스프라이트 상태 / 방향
+    # =============================
+    def set_state(self, state: str):
+        """
+        'idle', 'move', 'slash', 'pierce', 'blunt', 'guard', 'evade', 'hit' 같은 상태 문자열.
+        이미지가 없으면 idle로 fallback.
+        """
+        self.current_state = state
+        if self.images and self.current_state not in self.images:
+            self.current_state = "idle"
+
+    def set_facing(self, direction: int):
+        """
+        direction > 0 이면 오른쪽, direction <= 0 이면 왼쪽을 본다고 가정.
+        (원본 이미지가 어느 방향을 보느냐에 따라 flip 조건만 바꿔주면 됨)
+        """
+        self.facing = 1 if direction > 0 else -1
+
+    def get_draw_image(self):
+        """
+        self.images에서 현재 상태(state) 이미지 가져오기.
+        어떤 이유로든 이미지가 없으면 절대 None을 반환하지 않고
+        fallback 사각형 Surface를 반환하여 draw()가 절대 터지지 않도록 한다.
+        """
+
+        # --- 이미지 dict가 비어 있으면 fallback 생성 ---
+        if not self.images:
+            # 적/아군 색 조금 다르게 해도 됨
+            surf = pygame.Surface((80, 120), pygame.SRCALPHA)
+            color = (80, 120, 220) if self.is_ally else (220, 120, 80)
+            surf.fill(color)
+            return surf
+
+        state = self.current_state
+        img = self.images.get(state)
+
+        # 현재 state 이미지가 없으면 idle 찾기
+        if img is None:
+            img = self.images.get("idle")
+
+        # idle도 없으면 이미지 dict에서 첫 번째 항목 사용
+        if img is None:
+            img = next(iter(self.images.values()))
+
+        # 여전히 None이면 fallback
+        if img is None:
+            surf = pygame.Surface((80, 120), pygame.SRCALPHA)
+            color = (80, 120, 220) if self.is_ally else (220, 120, 80)
+            surf.fill(color)
+            return surf
+
+        # --- 방향에 따른 flip ---
+        if self.facing < 0:
+            img = pygame.transform.flip(img, True, False)
+
+        return img
 
     # =============================
     # 속도 굴리기
@@ -931,11 +1079,13 @@ class Unit(pygame.sprite.Sprite):
         n = max(1, int(getattr(self, "speed_dice_count", 1)))
         radius = 28
         centers = []
+        base_gap = int(self.rect.height * 0.1)  # 필요하면 0.4~0.5 사이로 조정
+
         # 가운데 기준으로 좌우로 배치
         for i in range(n):
             offset = (i - (n - 1) / 2.0) * (radius * 2 + 8)
             cx = self.rect.centerx + offset
-            cy = self.rect.top - 40
+            cy = self.rect.top - base_gap
             centers.append((cx, cy))
         return centers
 
@@ -1064,7 +1214,7 @@ class Unit(pygame.sprite.Sprite):
 
         # 전체 타원의 반지름 (프레임 형태에 맞춰 대략 조정)
         outer_rx = target_w * 0.55
-        outer_ry = target_h * 1.05
+        outer_ry = target_h * 1
         thickness = target_h * 0.17
         inner_rx = outer_rx - thickness
         inner_ry = outer_ry - thickness
@@ -1117,7 +1267,8 @@ class Unit(pygame.sprite.Sprite):
 
         total_width = (self.max_light - 1) * spacing
         start_x = self.rect.centerx - total_width / 2
-        y = self.rect.top - 12
+        light_gap = int(self.rect.height * -0.1)  # 필요하면 0.25~0.35 사이로 조정
+        y = self.rect.top - light_gap
 
         # 🔹 실제 논리상의 빛(self.light)은 건들지 않고,
         #     '예약된 빛(light_reserved)'만큼 UI에서 미리 빠진 것처럼 보이게 한다.
@@ -1164,7 +1315,10 @@ class Unit(pygame.sprite.Sprite):
 
     def draw(self, surface, font, show_speed_token=True):
         # 캐릭터 스프라이트
-        surface.blit(self.image, self.rect)
+        sprite = self.get_draw_image()
+        if sprite is None:
+            sprite = self.image
+        surface.blit(sprite, self.rect)
 
         # HP/SP 바
         self.draw_hp_sp_bar(surface)

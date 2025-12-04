@@ -3,6 +3,7 @@ import os
 import cv2
 import pygame
 import math
+from ffpyplayer.player import MediaPlayer
 
 from unit import WHITE
 
@@ -29,45 +30,73 @@ def _find_menu_dir():
 def _open_background_video(menu_dir):
     """
     menu 폴더 안에서 동영상 파일(mp4 등)을 찾아 첫 번째 것을 연다.
-    동영상이 없으면 None을 반환한다.
+    ffpyplayer.MediaPlayer를 반환하고, 없으면 None을 반환한다.
     """
     if not os.path.isdir(menu_dir):
         return None
 
     video_exts = (".mp4", ".avi", ".mov", ".mkv")
     candidates = [
-        f for f in os.listdir(menu_dir)
-        if f.lower().endswith(video_exts)
+        name
+        for name in os.listdir(menu_dir)
+        if name.lower().endswith(video_exts)
     ]
     if not candidates:
         return None
 
     candidates.sort()
     path = os.path.join(menu_dir, candidates[0])
-    cap = cv2.VideoCapture(path)
-    if not cap.isOpened():
-        print(f"[메뉴] 동영상을 열 수 없습니다: {path}")
+
+    try:
+        player = MediaPlayer(
+            path,
+            ff_opts={
+                "out_fmt": "rgb24",
+                "sync": "audio",
+                "loop": 0,      # 0이면 무한 루프
+                "autoexit": False,
+            },
+        )
+    except Exception as e:
+        print(f"[메뉴] 동영상을 열 수 없습니다: {path} ({e})")
         return None
 
     print(f"[메뉴] 배경 동영상 사용: {path}")
-    return cap
+    return player
 
 
-def _read_video_frame_as_surface(cap, screen_size):
-    """cv2 VideoCapture에서 한 프레임을 읽어 pygame Surface로 변환."""
-    ret, frame = cap.read()
-    if not ret:
-        # 끝까지 재생했다면 처음으로 루프
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        ret, frame = cap.read()
-        if not ret:
-            return None
+
+def _read_video_frame_as_surface(player, screen_size):
+    """
+    ffpyplayer.MediaPlayer에서 한 프레임을 읽어 pygame Surface로 변환.
+    """
+    frame, val = player.get_frame()
+
+    # 동영상이 끝에 닿았으면 처음으로 되감기
+    if val == "eof":
+        try:
+            player.seek(0.0, relative=False)
+        except Exception:
+            pass
+        return None  # 이 프레임에서는 그냥 배경을 안 그림
+
+    # 아직 프레임이 준비 안 된 경우
+    if frame is None:
+        return None
+
+    img, t = frame
+    vw, vh = img.get_size()
+    buf = img.to_bytearray()[0]  # rgb24 기준 단일 plane
+
+    surf = pygame.image.frombuffer(buf, (vw, vh), "RGB")
 
     w, h = screen_size
-    frame = cv2.resize(frame, (w, h))
-    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    surf = pygame.image.frombuffer(frame.tobytes(), (w, h), "RGB")
+    if (vw, vh) != (w, h):
+        surf = pygame.transform.smoothscale(surf, (w, h))
+
     return surf
+
+
 
 # ----------------------------
 # 타이틀 로고 (TitleLogo.png) 한 장만 사용하는 코드
@@ -250,8 +279,9 @@ def run_menu(screen):
             }
         )
 
-    # 배경 동영상 열기
-    cap = _open_background_video(menu_dir)
+    # 배경 동영상 열기 (ffpyplayer)
+    bg_player = _open_background_video(menu_dir)
+
 
     selected_idx = 0
     running = True
@@ -260,8 +290,8 @@ def run_menu(screen):
         dt = clock.tick(60) / 1000.0  # dt는 지금은 안 쓰지만 남겨둠
 
         # ----- 배경 그리기 -----
-        if cap is not None:
-            frame_surf = _read_video_frame_as_surface(cap, (screen_w, screen_h))
+        if bg_player is not None:
+            frame_surf = _read_video_frame_as_surface(bg_player, (screen_w, screen_h))
             if frame_surf is not None:
                 screen.blit(frame_surf, (0, 0))
             else:
@@ -288,8 +318,8 @@ def run_menu(screen):
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                if cap is not None:
-                    cap.release()
+                if bg_player is not None:
+                    bg_player.close_player()
                 return "EXIT"
 
             if event.type == pygame.KEYDOWN:
@@ -299,19 +329,19 @@ def run_menu(screen):
                     selected_idx = (selected_idx + 1) % len(icons)
                 elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                     key = icons[selected_idx]["key"]
-                    if cap is not None:
-                        cap.release()
+                    if bg_player is not None:
+                        bg_player.close_player()
                     return _action_from_key(key)
                 elif event.key == pygame.K_ESCAPE:
-                    if cap is not None:
-                        cap.release()
+                    if bg_player is not None:
+                        bg_player.close_player()
                     return "EXIT"
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if hovered_idx is not None:
                     key = icons[hovered_idx]["key"]
-                    if cap is not None:
-                        cap.release()
+                    if bg_player is not None:
+                        bg_player.close_player()
                     return _action_from_key(key)
 
         if hovered_idx is not None:
@@ -402,7 +432,7 @@ def run_menu(screen):
 
         pygame.display.flip()
 
-    if cap is not None:
-        cap.release()
+    if bg_player  is not None:
+        bg_player .close_player()
     return None
 

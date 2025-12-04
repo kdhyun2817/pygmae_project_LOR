@@ -2,6 +2,7 @@
 import pygame
 import random
 import os
+import math
 
 from unit import (
     Unit, SpeedTokenSprite, ResistLevel, DAMAGE_NAME_KO,
@@ -13,6 +14,20 @@ from stages import STAGES
 from pages_structured import load_combat_pages, CombatPage, EffectTarget, EffectTrigger
 
 COMBAT_PAGES = load_combat_pages("combat_pages_structured.csv")
+
+# --- 플레이어 덱 설정 (로비에서 선택한 책장 반영용) ---
+# key: 캐릭터 ID(예: "롤랑"), value: CombatPage.card_id(int) 리스트
+PLAYER_DECK_CONFIG = {}  # type: dict[str, list[int]]
+
+
+def set_player_deck_config(config: dict | None):
+    """
+    로비에서 넘어온 '캐릭터ID → 카드ID 리스트' 매핑을 저장한다.
+    캐릭터 ID는 create_ally_units() 에서 사용하는 party 요소와 동일해야 한다.
+    """
+    global PLAYER_DECK_CONFIG
+    PLAYER_DECK_CONFIG = config or {}
+
 
 # --- 공격/수비 주사위 아이콘 텍스처 ---
 
@@ -503,16 +518,34 @@ def award_emotion_for_hit(attacker, defender, damage_amount, is_kill=False):
 
 
 
-def create_ally_units(width, height):
-    """아군 유닛 3명 생성 (오른쪽 '<' 모양)"""
+def create_ally_units(width, height, party=None):
+    """
+    아군 유닛 생성.
+    - party: ["Roland", ...] 같이 로비에서 선택한 캐릭터 ID 리스트
+    - 지금은 캐릭터가 롤랑만 있지만, 나중에 여러 명으로 확장 가능하도록 만들었다.
+    - 위치는 기존처럼 화면 오른쪽에 '<' 모양으로 배치.
+    """
     ally_group = pygame.sprite.Group()
+
+    # party가 None이거나 빈 리스트면 기본으로 롤랑 한 명
+    if not party:
+        party = ["롤랑"]
+
+    # 기존 코드에서 쓰던 아군 배치 위치 그대로 유지
     ally_positions = [
         (width - 260, int(height * 0.60)),
         (width - 200, int(height * 0.40)),
         (width - 200, int(height * 0.80)),
     ]
 
-    for idx, (x, y) in enumerate(ally_positions):
+    for idx, char_id in enumerate(party):
+        # 준비해 둔 위치보다 파티 인원이 많으면 넘치는 건 버린다.
+        if idx >= len(ally_positions):
+            break
+
+        x, y = ally_positions[idx]
+
+        # 일단 기본 내성은 전부 NORMAL로 통일 (기존 코드와 동일)
         hp_res = {
             DamageType.SLASH: ResistLevel.NORMAL,
             DamageType.PIERCE: ResistLevel.NORMAL,
@@ -523,13 +556,32 @@ def create_ally_units(width, height):
             DamageType.PIERCE: ResistLevel.NORMAL,
             DamageType.BLUNT: ResistLevel.NORMAL,
         }
-        u = Unit(x, y, 2, 5, True, None, 1000, 1, hp_res, sp_res)
 
+        # 🔹 Unit 생성
+        #   - speed_min = 2, speed_max = 5
+        #   - is_ally = True
+        #   - image_path = None  (이미지는 character_name으로 로딩할 예정)
+        #   - max_hp = 1000, max_sp = 1   ← 네가 쓰던 값 그대로 유지
+        u = Unit(
+            x, y,
+            2, 5,
+            True,           # is_ally
+            None,           # image_path
+            1000, 100,        # max_hp, max_sp (원래 코드 값 유지)
+            hp_res, sp_res,
+            character_name=char_id,  # 🔹 여기서 캐릭터 이름 전달
+        )
+
+        if hasattr(u, "set_facing"):
+            u.set_facing(+1)
+
+        # 🔹 아군 기본 속도 코인 개수 (원래 1개였음)
         u.speed_dice_count = 1
 
         ally_group.add(u)
 
     return ally_group
+
 
 
 
@@ -552,6 +604,9 @@ def create_enemies_from_stage(stage_code):
             spec["hp_res"],
             spec["sp_res"],
         )
+
+        if hasattr(u, "set_facing"):
+            u.set_facing(-1)
 
         # 🔹 적도 기본 속도 코인 2개 사용
         u.speed_dice_count = 1
@@ -1758,6 +1813,155 @@ def resolve_one_sided_attack(dice: Dice, attacker, defender):
 
     return val
 
+def apply_clash_visual_result(dice_a, dice_b, winner: str, va: int, vb: int):
+    """
+    합공 1회 결과에 따라 두 유닛의 스프라이트 상태와 약간의 전진/후퇴를 적용한다.
+    winner: "a" / "b" / "tie"
+    """
+    ua, ub = dice_a.owner, dice_b.owner
+    ka, kb = dice_a.kind, dice_b.kind
+
+    # 방향 벡터: a -> b
+    ax = getattr(ua, "current_pos", [ua.rect.centerx, ua.rect.centery])[0]
+    ay = getattr(ua, "current_pos", [ua.rect.centerx, ua.rect.centery])[1]
+    bx = getattr(ub, "current_pos", [ub.rect.centerx, ub.rect.centery])[0]
+    by = getattr(ub, "current_pos", [ub.rect.centerx, ub.rect.centery])[1]
+
+    dx = bx - ax
+    dy = by - ay
+    dist = math.hypot(dx, dy) or 1.0
+    dir_x = dx / dist
+    dir_y = dy / dist
+
+    # 이동량 (픽셀)
+    STEP_FORWARD = 25.0
+    STEP_BACK = 20.0
+
+    def move_unit(u, sx, sy):
+        if not hasattr(u, "current_pos"):
+            return
+        u.current_pos[0] += sx
+        u.current_pos[1] += sy
+
+    def set_state(u, state):
+        if hasattr(u, "set_state"):
+            u.set_state(state)
+
+    def attack_state(dice):
+        # 피해 타입에 따라 참격/관통/타격 이미지 선택
+        if dice.damage_type == DamageType.PIERCE:
+            return "pierce"
+        elif dice.damage_type == DamageType.BLUNT:
+            return "blunt"
+        else:
+            return "slash"
+
+    # --- 공통: 기본은 idle로 초기화한 뒤, 케이스별로 다시 세팅 ---
+    for u in (ua, ub):
+        set_state(u, "idle")
+
+    # === 1) ATTACK vs ATTACK ===
+    if ka == DiceKind.ATTACK and kb == DiceKind.ATTACK:
+        if winner == "a":
+            set_state(ua, attack_state(dice_a))
+            set_state(ub, "hit")
+            move_unit(ua, dir_x * STEP_FORWARD, dir_y * STEP_FORWARD)
+            move_unit(ub, -dir_x * STEP_BACK, -dir_y * STEP_BACK)
+        elif winner == "b":
+            set_state(ub, attack_state(dice_b))
+            set_state(ua, "hit")
+            move_unit(ub, -dir_x * STEP_FORWARD, -dir_y * STEP_FORWARD)  # b → a 방향
+            move_unit(ua, dir_x * STEP_BACK, dir_y * STEP_BACK)
+        else:
+            # 비겼을 때는 둘 다 공격 모션만
+            set_state(ua, attack_state(dice_a))
+            set_state(ub, attack_state(dice_b))
+        return
+
+    # === 2) ATTACK vs DEFENSE / DEFENSE vs ATTACK ===
+    # (공격 vs 방어에서 방어가 이기면 방어는 방어 이미지, 공격은 피격 + 뒤로)
+    # 공격/방어 주사위와 소유자, winner 기준으로 정리
+    if (ka == DiceKind.ATTACK and kb == DiceKind.DEFENSE) or (ka == DiceKind.DEFENSE and kb == DiceKind.ATTACK):
+        if ka == DiceKind.ATTACK:
+            atk_u, atk_d, def_u, def_d = ua, dice_a, ub, dice_b
+            atk_is_a = True
+        else:
+            atk_u, atk_d, def_u, def_d = ub, dice_b, ua, dice_a
+            atk_is_a = False
+
+        # winner가 공격 쪽인지 방어 쪽인지 판별
+        attack_win = (winner == ("a" if atk_is_a else "b"))
+        if attack_win:
+            # 공격 주사위 승리 → 공격자는 전진, 방어자는 피격 + 뒤로
+            set_state(atk_u, attack_state(atk_d))
+            set_state(def_u, "hit")
+            # atk_u -> def_u 방향으로 벡터 계산
+            if atk_u is ua:
+                sx = dir_x
+                sy = dir_y
+            else:
+                sx = -dir_x
+                sy = -dir_y
+            move_unit(atk_u, sx * STEP_FORWARD, sy * STEP_FORWARD)
+            move_unit(def_u, -sx * STEP_BACK, -sy * STEP_BACK)
+        else:
+            # 방어 승리 → 방어는 방어 이미지, 공격은 피격 + 뒤로
+            set_state(def_u, "guard")
+            set_state(atk_u, "hit")
+            if atk_u is ua:
+                sx = dir_x
+                sy = dir_y
+            else:
+                sx = -dir_x
+                sy = -dir_y
+            move_unit(atk_u, -sx * STEP_BACK, -sy * STEP_BACK)
+        return
+
+    # === 3) ATTACK vs EVADE / EVADE vs ATTACK ===
+    if (ka == DiceKind.ATTACK and kb == DiceKind.EVADE) or (ka == DiceKind.EVADE and kb == DiceKind.ATTACK):
+        if ka == DiceKind.ATTACK:
+            atk_u, atk_d, eva_u, eva_d = ua, dice_a, ub, dice_b
+            atk_is_a = True
+        else:
+            atk_u, atk_d, eva_u, eva_d = ub, dice_b, ua, dice_a
+            atk_is_a = False
+
+        attack_win = (winner == ("a" if atk_is_a else "b"))
+
+        if attack_win:
+            # 공격 > 회피 → 공격자는 공격 모션 + 전진, 회피자는 피격 + 뒤로
+            set_state(atk_u, attack_state(atk_d))
+            set_state(eva_u, "hit")
+            if atk_u is ua:
+                sx = dir_x
+                sy = dir_y
+            else:
+                sx = -dir_x
+                sy = -dir_y
+            move_unit(atk_u, sx * STEP_FORWARD, sy * STEP_FORWARD)
+            move_unit(eva_u, -sx * STEP_BACK, -sy * STEP_BACK)
+        else:
+            # 회피 승리 → 회피는 회피 이미지 + 뒤로, 공격자는 그냥 공격 모션 정도
+            set_state(eva_u, "evade")
+            set_state(atk_u, attack_state(atk_d))
+            if eva_u is ua:
+                sx = dir_x
+                sy = dir_y
+            else:
+                sx = -dir_x
+                sy = -dir_y
+            move_unit(eva_u, -sx * STEP_BACK, -sy * STEP_BACK)
+        return
+
+    # 그 외 DEFENSE vs DEFENSE, EVADE vs EVADE 등은 일단 가볍게만 처리
+    if ka == DiceKind.DEFENSE and kb == DiceKind.DEFENSE:
+        set_state(ua, "guard")
+        set_state(ub, "guard")
+    elif ka == DiceKind.EVADE and kb == DiceKind.EVADE:
+        set_state(ua, "evade")
+        set_state(ub, "evade")
+
+
 def _get_unit_speed_for_clash(u):
     """
     이 유닛이 이번 합공에서 사용하는 '속도' 값.
@@ -1786,6 +1990,26 @@ def _pick_faster_slower(a, b):
     else:
         return b, a
 
+def set_units_facing_by_position(a, b):
+    """
+    두 유닛의 x 좌표를 비교해서
+    더 왼쪽에 있는 쪽은 오른쪽을, 더 오른쪽에 있는 쪽은 왼쪽을 바라보게 만든다.
+    """
+    if a is None or b is None:
+        return
+
+    # current_pos가 있으면 그걸 우선 사용, 없으면 rect.centerx
+    ax = getattr(a, "current_pos", [a.rect.centerx])[0]
+    bx = getattr(b, "current_pos", [b.rect.centerx])[0]
+
+    if hasattr(a, "set_facing") and hasattr(b, "set_facing"):
+        if ax <= bx:
+            # a가 왼쪽, b가 오른쪽
+            a.set_facing(-1)   # 오른쪽을 바라봄
+            b.set_facing(+1)   # 왼쪽을 바라봄
+        else:
+            a.set_facing(+1)
+            b.set_facing(-1)
 
 
 def resolve_clash_between_units(unit_a, unit_b):
@@ -1888,6 +2112,9 @@ def resolve_clash_between_units(unit_a, unit_b):
         # 1) 합공 주사위
         if can_a and can_b:
             winner, va, vb = resolve_clash(d_a, d_b)
+
+            # 🔹 스프라이트 상태 + 전진/후퇴 연출 반영
+            apply_clash_visual_result(d_a, d_b, winner, va, vb)
 
             # 🔹 주목 정보 기록 (최종 값)
             if callable(set_attention_last_fn):
@@ -2020,6 +2247,9 @@ def resolve_one_sided_sequence(attacker, defender):
         # 실제 일방 공격 판정
         val = resolve_one_sided_attack(d, attacker, defender)
 
+        # 🔹 스프라이트 상태 + 전진/후퇴 연출
+        apply_one_sided_visual_result(d, attacker, defender, val)
+
         if callable(set_attention_last_fn):
             set_attention_last_fn({
                 "kind": "one_sided",
@@ -2035,6 +2265,57 @@ def resolve_one_sided_sequence(attacker, defender):
             render_focus()
             pygame.time.delay(200)
 
+def apply_one_sided_visual_result(dice, attacker, defender, val: int):
+    """
+    일방 공격 1회에 대한 시각 연출.
+    ATTACK이면 공격자 전진 + 피격자 뒤로, DEFENSE/EVADE는 그냥 상태만.
+    """
+    ax = getattr(attacker, "current_pos", [attacker.rect.centerx, attacker.rect.centery])[0]
+    ay = getattr(attacker, "current_pos", [attacker.rect.centerx, attacker.rect.centery])[1]
+    bx = getattr(defender, "current_pos", [defender.rect.centerx, defender.rect.centery])[0]
+    by = getattr(defender, "current_pos", [defender.rect.centerx, defender.rect.centery])[1]
+
+    dx = bx - ax
+    dy = by - ay
+    dist = math.hypot(dx, dy) or 1.0
+    dir_x = dx / dist
+    dir_y = dy / dist
+
+    STEP_FORWARD = 25.0
+    STEP_BACK = 20.0
+
+    def move_unit(u, sx, sy):
+        if not hasattr(u, "current_pos"):
+            return
+        u.current_pos[0] += sx
+        u.current_pos[1] += sy
+
+    def set_state(u, state):
+        if hasattr(u, "set_state"):
+            u.set_state(state)
+
+    if dice.kind == DiceKind.ATTACK:
+        # 공격 주사위 → 공격자 전진 + 피격자 피격/뒤로
+        if dice.damage_type == DamageType.PIERCE:
+            atk_state = "pierce"
+        elif dice.damage_type == DamageType.BLUNT:
+            atk_state = "blunt"
+        else:
+            atk_state = "slash"
+
+        set_state(attacker, atk_state)
+        set_state(defender, "hit")
+        move_unit(attacker, dir_x * STEP_FORWARD, dir_y * STEP_FORWARD)
+        move_unit(defender, -dir_x * STEP_BACK, -dir_y * STEP_BACK)
+
+    elif dice.kind == DiceKind.DEFENSE:
+        set_state(attacker, "guard")
+    elif dice.kind == DiceKind.EVADE:
+        set_state(attacker, "evade")
+        # 회피도 살짝 뒤로 빠지게
+        move_unit(attacker, -dir_x * STEP_BACK, -dir_y * STEP_BACK)
+    else:
+        set_state(attacker, "idle")
 
 
 
@@ -2241,24 +2522,84 @@ def apply_action_token_plan(kind, attacker, defender, atk_token_idx, def_token_i
 
 def init_decks_for_units(ally_group, enemy_group):
     """
-    아군/적군 유닛에게 각각 9장의 책장을 랜덤으로 배정하고,
-    시작할 때 손패 3장을 뽑는다.
-    (지금은 모든 책장을 COMBAT_PAGES 전체에서 랜덤으로 뽑는 구조)
+    아군/적군 유닛에게 각각 책장을 배정하고, 시작 손패 3장을 뽑는다.
+
+    - 아군(ally_group):
+        PLAYER_DECK_CONFIG 에 등록된 캐릭터라면,
+        해당 캐릭터 ID에 매핑된 CombatPage.card_id 리스트로 덱 구성.
+        (없는/잘못된 card_id는 무시)
+        아무 것도 없으면 기존처럼 랜덤 9장.
+
+    - 적(enemy_group):
+        기존과 동일하게 COMBAT_PAGES 전체에서 랜덤 9장.
     """
     all_pages = list(COMBAT_PAGES.values())
 
-    for u in list(ally_group) + list(enemy_group):
+    def build_deck_from_config(char_id: str):
+        """PLAYER_DECK_CONFIG를 보고 이 캐릭터의 덱을 만든다."""
+        if not PLAYER_DECK_CONFIG:
+            return []
+
+        id_list = PLAYER_DECK_CONFIG.get(char_id)
+        if not id_list:
+            return []
+
+        pages = []
+        for cid in id_list:
+            page = COMBAT_PAGES.get(cid)
+            if page is not None:
+                pages.append(page)
+        return pages
+
+    def finalize_deck(pages):
+        """
+        최소 1장 이상이 되도록 덱을 보정하고,
+        9장 기준으로 맞춰 준다(부족하면 채우고, 많으면 잘라냄).
+        """
+        if not pages:
+            # 아무 것도 없으면 랜덤 9장
+            pages = [random.choice(all_pages) for _ in range(9)]
+
+        # 9장보다 적으면 기존 페이지들에서 랜덤으로 채우기
+        if len(pages) < 9:
+            base = pages[:] if pages else all_pages
+            while len(pages) < 9:
+                pages.append(random.choice(base))
+        # 9장보다 많으면 앞에서 9장만 사용
+        elif len(pages) > 9:
+            pages = pages[:9]
+
+        return pages
+
+    # --- 아군 덱 설정 ---
+    for u in list(ally_group):
         if not hasattr(u, "set_deck"):
             continue
 
-        # 같은 책장을 여러 장 가질 수 있도록 choice 9번
-        deck = [random.choice(all_pages) for _ in range(9)]
-        u.set_deck(deck)
+        # Unit.character_name 은 create_ally_units 에서 party의 원소(캐릭터 ID)로 넘겨줌
+        char_id = getattr(u, "character_name", None)
+        pages = []
+        if isinstance(char_id, str):
+            pages = build_deck_from_config(char_id)
+
+        pages = finalize_deck(pages)
+        u.set_deck(pages)
+        u.draw_cards(3)
+
+    # --- 적 덱 설정 (기존 랜덤) ---
+    for u in list(enemy_group):
+        if not hasattr(u, "set_deck"):
+            continue
+
+        pages = [random.choice(all_pages) for _ in range(9)]
+        pages = finalize_deck(pages)
+        u.set_deck(pages)
         u.draw_cards(3)
 
 
 
-def run_battle(screen, stage_code):
+
+def run_battle(screen, stage_code, party=None):
     """
     전투 씬 메인 루프.
     - screen은 main_play에서 만든 걸 그대로 사용
@@ -2271,7 +2612,7 @@ def run_battle(screen, stage_code):
     pygame.mouse.set_visible(False)
 
     w, h = screen.get_size()
-    ally_group = create_ally_units(w, h)
+    ally_group = create_ally_units(w, h, party=party)
     enemy_group = create_enemies_from_stage(stage_code)
     all_units = pygame.sprite.Group()
     all_units.add(ally_group)
@@ -2657,20 +2998,74 @@ def run_battle(screen, stage_code):
                 draw_side(unit_b, page_b, val_b, align_left=unit_b.is_ally)
 
     def draw_enemy_hover_page_ui(surface, font, hovered_speed_unit, hovered_speed_token_index):
+        """적 속도 토큰에 마우스를 올렸을 때, 감정 UI 아래에 해당 토큰이 쓸 책장 미리보기 표시"""
+
+        # 1) 아예 hover 중인 토큰이 없거나 아군 토큰이면 표시 X
         if hovered_speed_unit is None or hovered_speed_unit.is_ally:
+            return
+        if hovered_speed_token_index is None:
             return
 
         enemy = hovered_speed_unit
         token_idx = hovered_speed_token_index
 
+        # 2) 적의 token_plans에서 이 토큰이 어떤 책장을 쓰는지 찾기
         token_plans = getattr(enemy, "token_plans", {})
-        plan = token_plans.get(token_idx, None)
-        if plan is None:
+        plan = token_plans.get(token_idx)
+        if not plan:
             return
 
         page = plan.get("page")
         if page is None:
             return
+
+        # 3) 패널 위치 계산: "왼쪽 위 감정 UI 바로 아래"
+        width, height = surface.get_size()
+
+        box_w = 260
+        box_h = 130
+        margin = 10
+        emotion_box_h = 80  # draw_emotion_ui에서 쓰는 높이랑 맞춤
+        gap = 6
+
+        x = margin
+        y = margin + emotion_box_h + gap
+
+        panel_rect = pygame.Rect(x, y, box_w, box_h)
+
+        # 4) 배경 + 테두리
+        pygame.draw.rect(surface, EMOTION_BG, panel_rect, border_radius=8)
+        pygame.draw.rect(surface, EMOTION_BORDER, panel_rect, 2, border_radius=8)
+
+        # 6) 책장 이름
+        page_name = getattr(page, "name", "(이름 없음)")
+        name_surf = font.render(page_name, True, EMOTION_TEXT)
+        name_rect = name_surf.get_rect()
+        name_rect.topleft = (x + 10, y + 30)
+        surface.blit(name_surf, name_rect)
+
+        # 작은 폰트
+        small_font = pygame.font.SysFont("malgungothic", 18)
+
+        # 7) 코스트 + 대상
+        cost = getattr(page, "cost", 0)
+        target = plan.get("target")
+        if target is not None and hasattr(target, "name"):
+            cost_text = f"코스트 {cost}  → 대상: {target.name}"
+        else:
+            cost_text = f"코스트 {cost}"
+
+        cost_surf = small_font.render(cost_text, True, EMOTION_TEXT)
+        surface.blit(cost_surf, (x + 10, y + 54))
+
+        # 8) 주사위 요약 (ex: '참격 3~7', '방어 2~5' ...)
+        dice_lines = build_dice_summary_lines(page)
+        line_y = y + 78
+
+        for line in dice_lines[:4]:  # 너무 길어지지 않게 최대 4줄만
+            line_surf = small_font.render(line, True, EMOTION_TEXT)
+            surface.blit(line_surf, (x + 10, line_y))
+            line_y += 20
 
     def adjust_actions_after_stagger(actions, cur_index):
         """
@@ -2820,10 +3215,22 @@ def run_battle(screen, stage_code):
             anim_state["atk_token_index"] = atk_idx
             anim_state["def_token_index"] = def_idx
 
-            # 👉 action 인덱스가 바뀌면, 이번 합공/일방용 시작 위치 캐시를 비운다
-            if anim_state.get("last_index", -1) != anim_state["index"]:
+            # 👉 이번 action이 바뀔 때마다 바라보는 방향과 기본 상태 초기화
+            # 👉 이번 action이 바뀔 때마다 바라보는 방향과 기본 상태 초기화
+            if anim_state.get("last_index_for_facing", -1) != anim_state["index"]:
+                anim_state["last_index_for_facing"] = anim_state["index"]
+
+                # 🔹 이전 액션에서 쓰던 접근 캐시 초기화
+                #    (clash용 fast/slow_start, one_sided용 atk/def_start가 섞이지 않도록)
                 anim_state.pop("approach_base", None)
-                anim_state["last_index"] = anim_state["index"]
+
+                # 방향 세팅: 왼쪽 유닛은 오른쪽, 오른쪽 유닛은 왼쪽을 바라보게
+                set_units_facing_by_position(a, b)
+
+                # 접근 시작이니까 둘 다 이동 상태로
+                for u in (a, b):
+                    if hasattr(u, "set_state"):
+                        u.set_state("move")
 
             if kind == "clash":
                 # 🔹 이번 합공에 쓸 토큰/페이지 세팅
@@ -2867,56 +3274,47 @@ def run_battle(screen, stage_code):
                         fast, slow = u2, u1
 
                     # 👉 이번 action의 '시작 위치'와 '목표 위치'를 한 번만 기록해 둔다
-                    if "approach_base" not in anim_state:
-                        fx0 = float(fast.current_pos[0])
-                        fy0 = float(fast.current_pos[1])
-                        sx0 = float(slow.current_pos[0])
-                        sy0 = float(slow.current_pos[1])
+                    # 👉 이번 action의 '시작 위치'와 '목표 위치' 기록
+                    fx0 = float(fast.current_pos[0])
+                    fy0 = float(fast.current_pos[1])
+                    sx0 = float(slow.current_pos[0])
+                    sy0 = float(slow.current_pos[1])
 
-                        dx = sx0 - fx0
-                        dy = sy0 - fy0
-                        dist = (dx * dx + dy * dy) ** 0.5 or 1.0
+                    dx = sx0 - fx0
+                    dy = sy0 - fy0
+                    dist = (dx * dx + dy * dy) ** 0.5 or 1.0
 
-                        # fast → slow 방향 단위벡터
-                        # fast → slow 방향 단위벡터
-                        dir_x = dx / dist
-                        dir_y = dy / dist
+                    dir_x = dx / dist
+                    dir_y = dy / dist
 
-                        # fast 기준으로 slow 쪽으로 70% 지점 (둘이 "부딪칠" 중심점)
-                        ratio = 0.7
-                        center_x = fx0 + dx * ratio
-                        center_y = fy0 + dy * ratio
+                    ratio = 0.7
+                    center_x = fx0 + dx * ratio
+                    center_y = fy0 + dy * ratio
 
-                        # ⚙ 중심점 기준으로
-                        #   왼쪽에서 오는 유닛은 약간 왼쪽,
-                        #   오른쪽에서 오는 유닛은 약간 오른쪽 위치에서 멈추게 한다.
-                        OFFSET = 60.0  # 두 유닛 사이 간격의 절반 정도
+                    OFFSET = 60.0
 
-                        # fast의 시작 x 좌표가 중심점 왼쪽/오른쪽인지에 따라 타겟 x 결정
-                        if fx0 <= center_x:
-                            fast_target_x = center_x - OFFSET
-                        else:
-                            fast_target_x = center_x + OFFSET
+                    if fx0 <= center_x:
+                        fast_target_x = center_x - OFFSET
+                    else:
+                        fast_target_x = center_x + OFFSET
 
-                        # slow도 동일 규칙
-                        if sx0 <= center_x:
-                            slow_target_x = center_x - OFFSET
-                        else:
-                            slow_target_x = center_x + OFFSET
+                    if sx0 <= center_x:
+                        slow_target_x = center_x - OFFSET
+                    else:
+                        slow_target_x = center_x + OFFSET
 
-                        # y는 중심 y 근처로 통일
-                        fast_target_y = center_y
-                        slow_target_y = center_y
+                    fast_target_y = center_y
+                    slow_target_y = center_y
 
-                        anim_state["approach_base"] = {
-                            "mode": "clash",
-                            "fast": fast,
-                            "slow": slow,
-                            "fast_start": (fx0, fy0),
-                            "slow_start": (sx0, sy0),
-                            "fast_target": (fast_target_x, fast_target_y),
-                            "slow_target": (slow_target_x, slow_target_y),
-                        }
+                    anim_state["approach_base"] = {
+                        "mode": "clash",
+                        "fast": fast,
+                        "slow": slow,
+                        "fast_start": (fx0, fy0),
+                        "slow_start": (sx0, sy0),
+                        "fast_target": (fast_target_x, fast_target_y),
+                        "slow_target": (slow_target_x, slow_target_y),
+                    }
 
                     base = anim_state["approach_base"]
                     fast = base["fast"]
@@ -2937,37 +3335,40 @@ def run_battle(screen, stage_code):
 
 
 
-                else:
 
+                else:
                     # 일방공: 공격자/피격자가 둘 다 9:1 지점 기준으로 좌우로 벌어지도록 이동
                     attacker, defender = a, b
 
                     # 이번 action에서 한 번만 시작/목표 위치를 계산해서 캐시에 넣어 둔다
                     if "approach_base" not in anim_state:
+                        # 시작 위치 (현재 좌표)
                         ax0 = float(attacker.current_pos[0])
                         ay0 = float(attacker.current_pos[1])
                         dx0 = float(defender.current_pos[0])
                         dy0 = float(defender.current_pos[1])
 
+                        # 두 캐릭터 사이 벡터와 거리
                         vx = dx0 - ax0
                         vy = dy0 - ay0
                         dist = (vx * vx + vy * vy) ** 0.5 or 1.0
 
-                        # 공격자 → 피격자 방향으로 90% 지점 (9:1)
+                        # 9:1 지점 (공격자 쪽에서 피격자 쪽으로 90% 위치)
                         ratio = 0.9
                         center_x = ax0 + vx * ratio
                         center_y = ay0 + vy * ratio
 
-                        # 9:1 지점을 기준으로, 한 명은 약간 왼쪽 / 한 명은 약간 오른쪽에 서게 한다
-                        OFFSET = 90.0  # 두 유닛 사이 간격의 절반 (기존보다 넓게)
-
+                        # 9:1 지점을 기준으로 좌우로 약간 벌어지도록 X 좌표를 잡는다
+                        OFFSET = 60.0
                         if ax0 <= center_x:
                             atk_target_x = center_x - OFFSET
+
                         else:
                             atk_target_x = center_x + OFFSET
 
                         if dx0 <= center_x:
                             def_target_x = center_x - OFFSET
+
                         else:
                             def_target_x = center_x + OFFSET
 
@@ -3036,13 +3437,19 @@ def run_battle(screen, stage_code):
             # 3) hold phase: 잠깐 화면에 결과를 보여주는 시간
             if anim_state["phase"] == "hold":
                 if anim_state["timer"] >= HOLD_TIME:
+                    # 이번 action에 관여했던 유닛들 상태 초기화
+                    a = anim_state.get("attacker")
+                    b = anim_state.get("defender")
+                    for u in (a, b):
+                        if hasattr(u, "set_state"):
+                            u.set_state("idle")
+
                     # 다음 action으로 넘어감
                     anim_state["index"] += 1
                     anim_state["phase"] = "approach"
                     anim_state["timer"] = 0.0
                     anim_state["resolved"] = False
 
-                    # 🔹 방금 액션의 주사위 표시 제거
                     clear_attention_last()
                     clear_focus_info()
                 return
@@ -3069,6 +3476,8 @@ def run_battle(screen, stage_code):
                         u.current_pos = [hx, hy]
                         u.rect.centerx = int(hx)
                         u.rect.centery = int(hy)
+                    if hasattr(u, "set_state"):
+                        u.set_state("idle")
 
                 # 🔹 주사위/포커스 표시 완전히 초기화
                 clear_attention_last()

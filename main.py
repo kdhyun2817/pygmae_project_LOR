@@ -1,7 +1,7 @@
 # main.py
 import pygame
 
-from battle import run_battle
+from battle import run_battle, set_player_deck_config
 from intro_scene import run_intro
 from menu_scene import run_menu
 from lobby_scene import run_lobby
@@ -33,18 +33,27 @@ def main():
             break
 
         if action == "START":
-            # 3) 스테이지 선택 로비로 이동
-            stage_code = run_lobby(screen)
+            # 3) 스테이지 + 캐릭터 + 책장 선택 로비로 이동
+            lobby_result = run_lobby(screen)
 
             # 로비에서 ESC나 뒤로 가기로 빠져나오면 None이 올 수 있음
-            if stage_code is None:
+            if lobby_result is None:
                 continue
 
-            # 4) 선택된 스테이지로 전투 진입
-            result = run_battle(screen, stage_code)
-            # result: "win", "lose" 등 (battle.py에서 이미 그렇게 설계됨)
-            # 필요하면 여기서 결과에 따라 처리 추가 가능
-            print("전투 결과:", result)
+            # run_lobby 는 (stage_code, party, deck_config) 튜플을 리턴한다.
+            stage_code, party, deck_config = lobby_result
+
+            # 🔹 로비에서 선택한 덱 설정을 전투 모듈에 전달
+            set_player_deck_config(deck_config)
+
+            # 🔹 파티 정보를 전투로 넘김 — 전투는 단 한 번만 실행
+            battle_result = run_battle(screen, stage_code, party=party)
+
+            if battle_result == "exit":
+                # 전투 종료 후 나가기 같은 경우 처리
+                return
+
+            print("전투 결과:", battle_result)
 
     pygame.quit()
 
