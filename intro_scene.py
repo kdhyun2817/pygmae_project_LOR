@@ -95,8 +95,8 @@ def run_intro(screen):
     - 로고가 끝나면 바로 인트로 재생
     - 중간에 ESC를 누르면 바로 다음 단계로 넘어감(메뉴/로비 등)
     """
-    # # 로고 영상 (스킵 가능)
-    # _play_video(screen, "LogoIntro.mp4", allow_skip=True)
-    #
-    # # 인트로 영상 (원하면 여기 allow_skip=False로 해서 스킵 못 하게 할 수도 있음)
-    # _play_video(screen, "GameIntro.mp4", allow_skip=True)
+    # 로고 영상 (스킵 가능)
+    _play_video(screen, "LogoIntro.mp4", allow_skip=True)
+
+    # 인트로 영상 (원하면 여기 allow_skip=False로 해서 스킵 못 하게 할 수도 있음)
+    _play_video(screen, "GameIntro.mp4", allow_skip=True)

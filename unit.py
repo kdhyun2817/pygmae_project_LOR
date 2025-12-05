@@ -28,6 +28,8 @@ LIGHT_FULL_COLOR = (250, 230, 120)   # 빛이 있는 마름모 색
 LIGHT_EMPTY_COLOR = (80, 80, 80)     # 빈 마름모 색
 LIGHT_BORDER_COLOR = (20, 20, 20)    # 테두리
 
+HP_SP_FRAME_TARGET_W = 130
+
 # ----------------------------
 # 속도 주사위 아이콘 텍스처
 # ----------------------------
@@ -98,6 +100,9 @@ def _load_dice_images():
 # ----------------------------
 _CHAR_IMAGE_CACHE = {}
 
+CHAR_TARGET_H = 300  # 지금 아군 1.5배 맞춰둔 값이랑 동일하게
+ENEMY_SCALE = 0.5
+
 def load_character_images(char_name: str):
     """
     characters/<char_name>/ 폴더에서 각 상태별 이미지를 로드해서 dict로 돌려준다.
@@ -126,7 +131,7 @@ def load_character_images(char_name: str):
 
     images = {}
     # 세로 기준 목표 높이 (원하는 만큼 조절 가능)
-    TARGET_H = 200  # 예: 130px 정도. 더 키우고 싶으면 150, 180 등으로 바꾸면 됨.
+    TARGET_H = CHAR_TARGET_H
 
     for key, fname in filename_map.items():
         path = os.path.join(char_dir, fname)
@@ -571,10 +576,33 @@ class Unit(pygame.sprite.Sprite):
         if base is None and image_path:
             try:
                 img = pygame.image.load(image_path).convert_alpha()
+
+                # 🔹 적 전용 단일 이미지도 아군과 같은 세로 높이로 스케일
+                orig_w, orig_h = img.get_size()
+                if orig_h > 0:
+                    scale = CHAR_TARGET_H / float(orig_h)
+                    target_w = int(orig_w * scale)
+                    target_h = int(orig_h * scale)
+                    img = pygame.transform.smoothscale(img, (target_w, target_h))
+
                 base = img
                 self.images["idle"] = img
             except Exception:
                 base = None
+
+        if base is not None and not self.is_ally:
+            scaled_images = {}
+            for key, img in self.images.items():
+                w, h = img.get_size()
+                new_size = (int(w * ENEMY_SCALE), int(h * ENEMY_SCALE))
+                if new_size[0] <= 0 or new_size[1] <= 0:
+                    # 혹시라도 너무 작아져서 0 되면 그냥 원본 유지
+                    scaled_images[key] = img
+                else:
+                    scaled_images[key] = pygame.transform.smoothscale(img, new_size)
+            self.images = scaled_images
+            # 상태 이미지 중 하나를 base 로 다시 선택
+            base = self.images.get(self.current_state) or self.images.get("idle") or base
 
         self.base_image = base
 
@@ -1079,7 +1107,7 @@ class Unit(pygame.sprite.Sprite):
         n = max(1, int(getattr(self, "speed_dice_count", 1)))
         radius = 28
         centers = []
-        base_gap = int(self.rect.height * 0.1)  # 필요하면 0.4~0.5 사이로 조정
+        base_gap = int(self.rect.height * 0.05)  # 필요하면 0.4~0.5 사이로 조정
 
         # 가운데 기준으로 좌우로 배치
         for i in range(n):
@@ -1195,8 +1223,8 @@ class Unit(pygame.sprite.Sprite):
         frame_orig = _HP_SP_FRAME
         base_w, base_h = frame_orig.get_size()
 
-        # ★ 이전보다 절반 정도 크기: self.rect.width * 1.0 으로 축소
-        target_w = int(self.rect.width * 1.0)
+        # ★ 캐릭터 크기와 상관없이 항상 같은 폭을 쓰도록 고정
+        target_w = HP_SP_FRAME_TARGET_W
         scale = target_w / base_w
         target_h = int(base_h * scale)
 
@@ -1210,12 +1238,12 @@ class Unit(pygame.sprite.Sprite):
         # --- 타원 파라미터 ---
         # 체력바 이미지의 중심 = 타원의 중심
         cx = target_w * 0.5 + 1
-        cy = target_h * 0.5 - 20
+        cy = target_h * 0.5 - 33
 
         # 전체 타원의 반지름 (프레임 형태에 맞춰 대략 조정)
         outer_rx = target_w * 0.55
         outer_ry = target_h * 1
-        thickness = target_h * 0.17
+        thickness = target_h * 0.10
         inner_rx = outer_rx - thickness
         inner_ry = outer_ry - thickness
 

@@ -456,11 +456,18 @@ class BattleEmotionSystem:
         """감정 레벨이 증가했을 때 처리"""
         self.ego_count += 1  # 공통 (아군/적 둘 다)
 
+        # ----------------------------------------
+        # 감정 단계가 증가하면 → 빛 모두 회복
+        # ----------------------------------------
+        for u in self.battle_units:  # run_battle에서 설정해줘야 함
+            u.set_light_to_max()
+
         if not self.is_player_side:
             return  # 적은 여기서 끝 (추가 보너스 없음)
 
         # 아군만 추가 효과
         self.max_light_bonus += 1
+
 
         if self.level == 4:
             # ✅ 속도 굴리기 보너스 X, "속도 코인 1개 추가" 로만 취급
@@ -533,9 +540,9 @@ def create_ally_units(width, height, party=None):
 
     # 기존 코드에서 쓰던 아군 배치 위치 그대로 유지
     ally_positions = [
-        (width - 260, int(height * 0.60)),
-        (width - 200, int(height * 0.40)),
-        (width - 200, int(height * 0.80)),
+        (width - 260, int(height * 0.50)),
+        (width - 200, int(height * 0.30)),
+        (width - 200, int(height * 0.70)),
     ]
 
     for idx, char_id in enumerate(party):
@@ -557,17 +564,12 @@ def create_ally_units(width, height, party=None):
             DamageType.BLUNT: ResistLevel.NORMAL,
         }
 
-        # 🔹 Unit 생성
-        #   - speed_min = 2, speed_max = 5
-        #   - is_ally = True
-        #   - image_path = None  (이미지는 character_name으로 로딩할 예정)
-        #   - max_hp = 1000, max_sp = 1   ← 네가 쓰던 값 그대로 유지
         u = Unit(
             x, y,
             2, 5,
             True,           # is_ally
             None,           # image_path
-            1000, 100,        # max_hp, max_sp (원래 코드 값 유지)
+            200, 100,        # max_hp, max_sp (원래 코드 값 유지)
             hp_res, sp_res,
             character_name=char_id,  # 🔹 여기서 캐릭터 이름 전달
         )
@@ -592,8 +594,26 @@ def create_enemies_from_stage(stage_code):
     data = STAGES[stage_code]
     enemy_group = pygame.sprite.Group()
 
+    # 기본 배치 기준 해상도 (stages.py에서 넣는 pos 기준)
+    BASE_W, BASE_H = 1280, 720
+
+    # 실제 화면 크기 가져와서 비율 계산 (나중에 해상도 바꿔도 대응되게)
+    screen = pygame.display.get_surface()
+    if screen is not None:
+        sw, sh = screen.get_size()
+    else:
+        sw, sh = BASE_W, BASE_H
+
+    sx = sw / BASE_W
+    sy = sh / BASE_H
+
     for spec in data["enemy_units"]:
-        x, y = spec["pos"]
+        base_x, base_y = spec["pos"]
+        x = int(base_x * sx)
+        y = int(base_y * sy)
+
+        char_name = spec.get("character_name") or spec.get("name")
+
         u = Unit(
             x, y,
             spec["speed_min"], spec["speed_max"],
@@ -603,12 +623,13 @@ def create_enemies_from_stage(stage_code):
             spec["max_sp"],
             spec["hp_res"],
             spec["sp_res"],
+            character_name=char_name,  # ★ 여기서 이름을 넘겨줌
         )
 
         if hasattr(u, "set_facing"):
             u.set_facing(-1)
 
-        # 🔹 적도 기본 속도 코인 2개 사용
+        # 🔹 적도 기본 속도 코인 1개 사용 (필요하면 나중에 per-unit 설정)
         u.speed_dice_count = 1
 
         enemy_group.add(u)
@@ -2520,7 +2541,8 @@ def apply_action_token_plan(kind, attacker, defender, atk_token_idx, def_token_i
 
 
 
-def init_decks_for_units(ally_group, enemy_group):
+def init_decks_for_units(ally_group, enemy_group, stage_code=None):
+
     """
     아군/적군 유닛에게 각각 책장을 배정하고, 시작 손패 3장을 뽑는다.
 
@@ -2586,17 +2608,24 @@ def init_decks_for_units(ally_group, enemy_group):
         u.set_deck(pages)
         u.draw_cards(3)
 
-    # --- 적 덱 설정 (기존 랜덤) ---
+    # --- 적 덱 설정 ---
     for u in list(enemy_group):
         if not hasattr(u, "set_deck"):
             continue
 
-        pages = [random.choice(all_pages) for _ in range(9)]
+        # 튜토리얼 스테이지면 → 프리셋 1과 같은 구성으로 고정
+        if stage_code == "tutorial":
+            # lobby_scene.py에서 프리셋 1이
+            # all_pages_list[:9] 기준이었으니까,
+            # 여기서도 COMBAT_PAGES.values() 앞 9장을 그대로 사용
+            pages = all_pages[:9]
+        else:
+            # 그 외 스테이지는 기존처럼 랜덤 9장
+            pages = [random.choice(all_pages) for _ in range(9)]
+
         pages = finalize_deck(pages)
         u.set_deck(pages)
         u.draw_cards(3)
-
-
 
 
 def run_battle(screen, stage_code, party=None):
@@ -2632,7 +2661,8 @@ def run_battle(screen, stage_code, party=None):
         u.current_pos = [float(cx), float(cy)]  # 그릴 때는 이 값을 rect에 반영할 것
 
     #  전투 시작 시 각 유닛에게 책장 9장 배정 + 손패 3장
-    init_decks_for_units(ally_group, enemy_group)
+    #  전투 시작 시 각 유닛에게 책장 9장 배정 + 손패 3장
+    init_decks_for_units(ally_group, enemy_group, stage_code)
 
     # 속도 토큰 스프라이트 그룹 생성 (이번 전투 동안 재사용)
     token_group = pygame.sprite.Group()
@@ -2693,8 +2723,13 @@ def run_battle(screen, stage_code, party=None):
     result = None  # 전투 결과
 
     # 감정 시스템 생성
+
+
     player_emotion = BattleEmotionSystem(is_player_side=True)
     enemy_emotion = BattleEmotionSystem(is_player_side=False)
+
+    player_emotion.battle_units = all_units
+    enemy_emotion.battle_units = all_units
 
     # 전역으로도 참조 가능하게 연결
     global PLAYER_EMOTION, ENEMY_EMOTION
@@ -4373,5 +4408,46 @@ def run_battle(screen, stage_code, party=None):
         pygame.display.flip()
 
     pygame.mouse.set_visible(True)
+
+    # --- 전투 종료 후 승패 연출 ---
+    if result in ("win", "lose"):
+        base_dir = os.path.dirname(__file__)
+        ui_dir = os.path.join(base_dir, "battle_UI")
+
+        if result == "win":
+            img_path = os.path.join(ui_dir, "victory.png")
+        else:
+            img_path = os.path.join(ui_dir, "defeat.png")
+
+        # 이미지 로드
+        banner = pygame.image.load(img_path).convert()
+        banner.set_colorkey((255, 255, 255))  # 흰색 제거
+        banner = banner.convert_alpha()
+
+        # 화면 크기에 비례해서 '약간 작은' 크기로 스케일
+        screen_rect = screen.get_rect()
+        target_w = int(screen_rect.width * 0.4)  # 화면 폭의 40% 정도
+        scale = target_w / banner.get_width()
+        target_h = int(banner.get_height() * scale)
+        banner = pygame.transform.smoothscale(banner, (target_w, target_h))
+
+        banner_rect = banner.get_rect(center=screen_rect.center)
+
+        # 마지막 전투 화면 위에 겹쳐서 그리기
+        screen.blit(banner, banner_rect)
+        pygame.display.flip()
+
+        # 아무 키/마우스 입력 or 2초 경과까지 대기
+        wait_clock = pygame.time.Clock()
+        elapsed = 0
+        waiting = True
+        while waiting and elapsed < 2000:
+            dt = wait_clock.tick(60)
+            elapsed += dt
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    waiting = False
+                elif event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
+                    waiting = False
 
     return result

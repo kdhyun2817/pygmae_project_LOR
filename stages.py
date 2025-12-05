@@ -1,68 +1,80 @@
 # stages.py
+from __future__ import annotations
+
 from unit import DamageType, ResistLevel
 
 SCREEN_WIDTH = 1280
 SCREEN_HEIGHT = 720
 
-# 스테이지 정의 예시
-# 지금은 "test1" 하나만. 나중에 "1-1", "1-2" 이런 식으로 늘리면 됨.
-STAGES = {
-    "test1": {
+# 화면 해상도는 main.py 에서 1280x720으로 쓰고 있으니,
+# 여기서는 그냥 그 기준으로 직접 좌표를 적어준다.
+
+STAGES: dict[str, dict] = {
+    # --------------------------------------
+    # 튜토리얼 스테이지
+    # 이름: 튜토리얼
+    # 적: 레니, 망치, 피트
+    # --------------------------------------
+    "tutorial": {
+        "name": "튜토리얼",
         "enemy_units": [
-            # 가운데 적
+            # 레니: 가운데 쯤
             {
-                "pos": (200, int(SCREEN_HEIGHT * 0.60)),
-                "max_hp": 50,
-                "max_sp": 20,
+                "name": "레니",
+                "max_hp": 90,
+                "max_sp": 45,
                 "speed_min": 1,
-                "speed_max": 3,
-                "hp_res": {
-                    DamageType.SLASH: ResistLevel.FATAL,
-                    DamageType.PIERCE: ResistLevel.NORMAL,
-                    DamageType.BLUNT: ResistLevel.ENDURE,
-                },
-                "sp_res": {
-                    DamageType.SLASH: ResistLevel.ENDURE,
-                    DamageType.PIERCE: ResistLevel.NORMAL,
-                    DamageType.BLUNT: ResistLevel.NORMAL,
-                },
-            },
-            # 왼쪽 위 적
-            {
-                "pos": (260, int(SCREEN_HEIGHT * 0.80)),
-                "max_hp": 35,
-                "max_sp": 25,
-                "speed_min": 3,
-                "speed_max": 6,
-                "hp_res": {
-                    DamageType.SLASH: ResistLevel.NORMAL,
-                    DamageType.PIERCE: ResistLevel.FATAL,
-                    DamageType.BLUNT: ResistLevel.NORMAL,
-                },
-                "sp_res": {
-                    DamageType.SLASH: ResistLevel.NORMAL,
-                    DamageType.PIERCE: ResistLevel.WEAK,
-                    DamageType.BLUNT: ResistLevel.ENDURE,
-                },
-            },
-            # 왼쪽 아래 적
-            {
-                "pos": (260, int(SCREEN_HEIGHT * 0.40)),
-                "max_hp": 45,
-                "max_sp": 30,
-                "speed_min": 2,
                 "speed_max": 4,
+                "pos": (200, int(SCREEN_HEIGHT * 0.60)),
                 "hp_res": {
                     DamageType.SLASH: ResistLevel.NORMAL,
-                    DamageType.PIERCE: ResistLevel.ENDURE,
-                    DamageType.BLUNT: ResistLevel.RESIST,
+                    DamageType.PIERCE: ResistLevel.NORMAL,
+                    DamageType.BLUNT: ResistLevel.NORMAL,
                 },
                 "sp_res": {
-                    DamageType.SLASH: ResistLevel.ENDURE,
+                    DamageType.SLASH: ResistLevel.NORMAL,
                     DamageType.PIERCE: ResistLevel.NORMAL,
-                    DamageType.BLUNT: ResistLevel.RESIST,
+                    DamageType.BLUNT: ResistLevel.NORMAL,
                 },
             },
-        ]
-    }
+            # 망치: 약간 위, 좀 더 왼쪽
+            {
+                "name": "망치",
+                "max_hp": 80,
+                "max_sp": 40,
+                "speed_min": 1,
+                "speed_max": 4,
+                "pos": (260, int(SCREEN_HEIGHT * 0.80)),
+                "hp_res": {
+                    DamageType.SLASH: ResistLevel.NORMAL,
+                    DamageType.PIERCE: ResistLevel.NORMAL,
+                    DamageType.BLUNT: ResistLevel.NORMAL,
+                },
+                "sp_res": {
+                    DamageType.SLASH: ResistLevel.NORMAL,
+                    DamageType.PIERCE: ResistLevel.NORMAL,
+                    DamageType.BLUNT: ResistLevel.NORMAL,
+                },
+            },
+            # 피트: 아래쪽, 오른쪽
+            {
+                "name": "피트",
+                "max_hp": 70,
+                "max_sp": 40,
+                "speed_min": 1,
+                "speed_max": 4,
+                "pos": (260, int(SCREEN_HEIGHT * 0.40)),
+                "hp_res": {
+                    DamageType.SLASH: ResistLevel.NORMAL,
+                    DamageType.PIERCE: ResistLevel.NORMAL,
+                    DamageType.BLUNT: ResistLevel.NORMAL,
+                },
+                "sp_res": {
+                    DamageType.SLASH: ResistLevel.NORMAL,
+                    DamageType.PIERCE: ResistLevel.NORMAL,
+                    DamageType.BLUNT: ResistLevel.NORMAL,
+                },
+            },
+        ],
+    },
 }
